@@ -1,0 +1,13 @@
+.build/
+build/
+*.app
+.swiftpm/
+DerivedData/
+*.xcodeproj/xcuserdata/
+.DS_Store
+# Never commit credentials or local audio
+.env
+*.key
+*.wav
+*.aiff
+*.caf
