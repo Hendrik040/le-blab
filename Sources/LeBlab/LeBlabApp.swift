@@ -35,6 +35,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated { AppCoordinator.shared.launch() }
     }
 
+    /// Opening Le Blab again while it runs (Spotlight, Finder, Dock) shows Settings — the way in
+    /// when the menu-bar duck is hidden behind the notch.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        MainActor.assumeIsolated { AppCoordinator.shared.windows.showSettings(tab: .general) }
+        return false
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated { AppCoordinator.shared.shutdown() }
     }

@@ -41,7 +41,21 @@ final class BubbleController {
         panel.isMovable = false
         panel.animationBehavior = .none
 
-        let view = BubbleView(model: model) { [weak coordinator] in coordinator?.controller.toggleFromMenu() }
+        // Right-click menu: the menu-bar duck can be hidden behind the notch on a crowded menu bar,
+        // so the bubble offers the same essentials.
+        let menu = BubbleMenu(
+            settings: { [weak coordinator] in coordinator?.windows.showSettings(tab: .general) },
+            privacy: { [weak coordinator] in coordinator?.windows.showSettings(tab: .privacy) },
+            diagnostics: { [weak coordinator] in coordinator?.windows.showSettings(tab: .diagnostics) },
+            toggleFormatting: { [weak coordinator] in
+                guard let settings = coordinator?.settings else { return }
+                settings.formattingMode = settings.formattingMode == .smart ? .raw : .smart
+            },
+            isSmart: { [weak coordinator] in coordinator?.settings.formattingMode == .smart },
+            copyLast: { [weak coordinator] in coordinator?.copyLastTranscript() },
+            hideBubble: { [weak coordinator] in coordinator?.settings.showIdleBubble = false },
+            quit: { NSApp.terminate(nil) })
+        let view = BubbleView(model: model, menu: menu) { [weak coordinator] in coordinator?.controller.toggleFromMenu() }
         let host = FirstMouseHostingView(rootView: view)
         host.frame = NSRect(origin: .zero, size: Self.size)
         panel.contentView = host
@@ -87,8 +101,21 @@ final class BubbleController {
     }
 }
 
+/// Actions for the bubble's right-click menu (nil = preview/snapshot, no menu).
+struct BubbleMenu {
+    let settings: () -> Void
+    let privacy: () -> Void
+    let diagnostics: () -> Void
+    let toggleFormatting: () -> Void
+    let isSmart: () -> Bool
+    let copyLast: () -> Void
+    let hideBubble: () -> Void
+    let quit: () -> Void
+}
+
 struct BubbleView: View {
     @ObservedObject var model: BubbleModel
+    var menu: BubbleMenu? = nil
     let onClick: () -> Void
 
     var body: some View {
@@ -124,7 +151,21 @@ struct BubbleView: View {
         .contentShape(Capsule())
         .onHover { hovering in withAnimation(.easeOut(duration: 0.12)) { model.hovering = hovering } }
         .onTapGesture(perform: onClick)
-        .help("Le Blab — hold \(model.shortcut) to dictate, or click for hands-free")
+        .contextMenu {
+            if let menu {
+                Button("Settings…", action: menu.settings)
+                Button("Change Shortcut…", action: menu.settings)
+                Button(menu.isSmart() ? "Switch to Raw Transcription" : "Switch to Smart Formatting", action: menu.toggleFormatting)
+                Button("Copy Last Transcript", action: menu.copyLast)
+                Divider()
+                Button("Privacy…", action: menu.privacy)
+                Button("Diagnostics…", action: menu.diagnostics)
+                Button("Hide Bubble", action: menu.hideBubble)
+                Divider()
+                Button("Quit Le Blab", action: menu.quit)
+            }
+        }
+        .help("Le Blab — hold \(model.shortcut) to dictate, click for hands-free, right-click for settings")
         .frame(width: BubbleController.size.width, height: BubbleController.size.height, alignment: .bottom)
         .padding(.bottom, 2)
     }
