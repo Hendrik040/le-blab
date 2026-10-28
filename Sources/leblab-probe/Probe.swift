@@ -84,8 +84,10 @@ struct Probe {
         var partials = 0
         let trace = flag("--trace")
         var releasedAt: TimeInterval?
+        var lastDeltaAt: TimeInterval?
         session.onPartial = { text in
             partials += 1
+            lastDeltaAt = ProcessInfo.processInfo.systemUptime
             if trace, let r = releasedAt {
                 print("  +\(ms(ProcessInfo.processInfo.systemUptime - r)) after release: …\(text.suffix(40))")
             } else if partials <= 3 || partials % 10 == 0 { print("[\(now())] partial: \(text.suffix(90))") }
@@ -107,7 +109,17 @@ struct Probe {
             offset = end
             if paced { try? await Task.sleep(nanoseconds: 50_000_000) }
         }
-        print("[\(now())] audio sent (\(String(format: "%.1f", PCMFormat.duration(ofBytes: pcm.count))) s) — finishing")
+        let speechEnd = ProcessInfo.processInfo.systemUptime
+        // --pause: keep "holding the key" with silence, like a user who stops talking before letting go.
+        let pauseMs = Int(option("--pause") ?? "0") ?? 0
+        var sentSilence = 0
+        while sentSilence < pauseMs {
+            session.append(AudioChunk(pcm: Data(count: chunkBytes), level: 0, voiced: false))
+            sentSilence += 50
+            if paced { try? await Task.sleep(nanoseconds: 50_000_000) }
+        }
+        let streamedAtRelease = session.assembler.displayText
+        print("[\(now())] audio sent (\(String(format: "%.1f", PCMFormat.duration(ofBytes: pcm.count))) s + \(pauseMs) ms pause) — finishing")
         releasedAt = ProcessInfo.processInfo.systemUptime
         let result = await session.finish()
         let t = session.timeline
@@ -128,6 +140,11 @@ struct Probe {
         if flag("--trace"), let socket = sockets.last {
             let summary = socket.log.map { "\($0.1)@\(Int($0.0 * 1000))" }.joined(separator: " ")
             print("server events after end (\(endMode)): \(summary)")
+        }
+        if case .success(let r) = result {
+            let lastAfterSpeech = lastDeltaAt.map { Int(($0 - speechEnd) * 1000) } ?? -1
+            print("PAUSE delay=\(delay) pause=\(pauseMs) last_delta_after_speech_end_ms=\(lastAfterSpeech) complete_at_release=\(streamedAtRelease == r.text) release_to_final_ms=\(Int(((t.finalTranscript ?? 0) - (t.released ?? 0)) * 1000))")
+            print("TEXT \(r.text)")
         }
         print("connect (press→session ready): \(span(t.pressed, t.streamReady))")
         print("time to first partial:          \(span(t.pressed, t.firstPartial))")

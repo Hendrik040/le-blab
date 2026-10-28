@@ -66,12 +66,17 @@ Le Blab never presses Return/Enter for you.
 
 Live against the Mistral API on an M4 Max (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#latency-design-measured-not-assumed)):
 
-| | Typical |
+| | Typical (p50) |
 |---|---|
-| Key press → first partial on screen | ~1.0 s (480 ms streaming delay) |
-| Release → final transcript | ~0.6 s |
-| Release → text inserted, raw mode | ~0.7 s |
-| Release → text inserted, smart formatting | ~1.2 s |
+| Release → final transcript | ~0.5 s (240 ms streaming delay) |
+| Release → text inserted, raw mode | ~0.55 s |
+| Release → text inserted, smart formatting, clean sentence | ~0.55 s (no LLM call needed) |
+| Release → text inserted, sentence with a self-correction, native apps | ~0.5 s, polished in place at ~1.2 s |
+| Release → text inserted, sentence with a self-correction, browsers/chat apps | ~0.57 s with Speed first (default), ~1.2 s without |
+
+Measured with the end-to-end self-test (synthesized speech, TextEdit and Chrome). Speed first pastes
+the locally cleaned text in apps that can't be edited in place; turn it off in Settings → Formatting
+→ Speed to always wait for the polished text there.
 
 ## Privacy in one paragraph
 

@@ -19,6 +19,8 @@ struct StorageTests {
         #expect(s.activationMode == .holdToTalk)
         #expect(s.quality == .fast)
         #expect(s.language == "auto")
+        #expect(s.streamingDelayMs == 240)
+        #expect(s.skipCleanTranscripts && s.optimisticInsert && s.speedFirstInPasteApps)
         let options = s.sessionOptions(turnDetection: false)
         #expect(options.realtime.model == "voxtral-mini-transcribe-realtime-3-0")
         #expect(options.realtime.contextBias.contains("CodeRabbit"))

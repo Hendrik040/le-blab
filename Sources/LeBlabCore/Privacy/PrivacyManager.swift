@@ -42,7 +42,9 @@ public enum PrivacyManager {
         }
         if settings.formattingMode == .smart {
             flows.append(DataFlow(id: "llm", what: "The transcript text", destination: "Mistral API — \(settings.formatterModel)",
-                                  when: "After each dictation, for cleanup"))
+                                  when: settings.skipCleanTranscripts
+                                    ? "Only when it needs cleanup (corrections, lists, spoken punctuation/URLs, numbers, long text)"
+                                    : "After each dictation, for cleanup"))
         }
         return flows
     }

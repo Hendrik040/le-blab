@@ -8,9 +8,15 @@ public final class LatencyTimeline {
     public var streamReady: TimeInterval?
     public var firstAudio: TimeInterval?
     public var firstPartial: TimeInterval?
+    /// The user let go of the shortcut (start of every "after release" metric).
     public var released: TimeInterval?
+    /// Capture stopped and end-of-audio was sent (after the release tail).
+    public var audioEnded: TimeInterval?
     public var finalTranscript: TimeInterval?
     public var formatted: TimeInterval?
+    /// First dictated text visible in the target app (provisional or final).
+    public var firstText: TimeInterval?
+    /// Final text in place.
     public var inserted: TimeInterval?
 
     private let clock: () -> TimeInterval
@@ -51,10 +57,14 @@ public struct DictationMetrics: Identifiable, Codable, Equatable, Sendable {
     public var releaseToFinal: TimeInterval?
     /// Final transcript → formatted text.
     public var formattingTime: TimeInterval?
-    /// Key release → text inserted in the target app.
+    /// Key release → first dictated text visible in the target app.
+    public var releaseToFirstText: TimeInterval?
+    /// Key release → final text in place in the target app.
     public var releaseToInsert: TimeInterval?
-    /// Time spent waiting on Mistral (connect + final wait + formatting request).
+    /// Time spent waiting on Mistral (connect + final wait after end of audio + formatting request).
     public var apiLatency: TimeInterval?
+    /// Audio captured after release (0 when the user had already stopped talking).
+    public var releaseTail: TimeInterval?
 
     @MainActor
     public init(timeline t: LatencyTimeline, outcome: String, model: String, source: TranscriptSource?, formatting: String,
@@ -71,8 +81,11 @@ public struct DictationMetrics: Identifiable, Codable, Equatable, Sendable {
         firstPartial = LatencyTimeline.span(t.pressed, t.firstPartial)
         releaseToFinal = LatencyTimeline.span(t.released, t.finalTranscript)
         formattingTime = LatencyTimeline.span(t.finalTranscript, t.formatted)
+        releaseToFirstText = LatencyTimeline.span(t.released, t.firstText ?? t.inserted)
         releaseToInsert = LatencyTimeline.span(t.released, t.inserted)
-        let parts = [connect, releaseToFinal, formattingTime].compactMap { $0 }
+        releaseTail = LatencyTimeline.span(t.released, t.audioEnded)
+        let finalWait = LatencyTimeline.span(t.audioEnded ?? t.released, t.finalTranscript)
+        let parts = [connect, finalWait, formattingTime].compactMap { $0 }
         apiLatency = parts.isEmpty ? nil : parts.reduce(0, +)
     }
 }

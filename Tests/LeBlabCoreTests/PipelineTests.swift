@@ -217,6 +217,19 @@ struct DictationControllerTests {
         #expect(rig.env.metrics.first?.releaseToInsert != nil)
     }
 
+    @Test func releaseClockStartsAtKeyReleaseNotAfterTheTail() async {
+        let rig = Rig()
+        rig.controller.releaseTail = 0.15
+        rig.streaming.onCreate = { $0.autoDone = "timed" }
+        rig.controller.handle(.pressed)
+        rig.audio.speak()
+        rig.controller.handle(.released)
+        #expect(await waitUntil { rig.env.metrics.count == 1 })
+        let m = try! #require(rig.env.metrics.first)
+        #expect((m.releaseToFinal ?? 0) >= 0.15, "the 150 ms tail is part of what the user waits for")
+        #expect((m.releaseToInsert ?? 0) >= 0.15)
+    }
+
     @Test func escapeCancelsAndNothingIsInserted() async {
         let rig = Rig()
         rig.streaming.onCreate = { $0.autoDone = "secret" }

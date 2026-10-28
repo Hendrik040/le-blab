@@ -54,12 +54,25 @@ enum SelfTest {
 
     static func run(phrase: String, coordinator: AppCoordinator) async -> String {
         let repeats = max(1, Int(value(after: "--selftest-repeat") ?? "1") ?? 1)
-        // Optional per-run formatting override; the saved preference is restored afterwards.
+        // Optional per-run overrides. Settings are only touched (and restored) when a flag is given, so a
+        // test run never pins a preference that would otherwise follow the app's defaults.
         let savedMode = coordinator.settings.formattingMode
-        if let mode = value(after: "--selftest-formatting").flatMap(FormattingMode.init(rawValue:)) {
-            coordinator.settings.formattingMode = mode
+        let modeOverride = value(after: "--selftest-formatting").flatMap(FormattingMode.init(rawValue:))
+        if let modeOverride { coordinator.settings.formattingMode = modeOverride }
+        defer { if modeOverride != nil { coordinator.settings.formattingMode = savedMode } }
+        // Insertion method (e.g. force paste in TextEdit to test the paste path).
+        let savedMethod = coordinator.settings.insertionMethod
+        let methodOverride = value(after: "--selftest-insertion").flatMap(InsertionMethod.init(rawValue:))
+        if let methodOverride {
+            coordinator.settings.insertionMethod = methodOverride
+            coordinator.insertion.method = methodOverride
         }
-        defer { coordinator.settings.formattingMode = savedMode }
+        defer { if methodOverride != nil { coordinator.settings.insertionMethod = savedMethod } }
+        // Speed first in paste apps: on | off.
+        let savedSpeed = coordinator.settings.speedFirstInPasteApps
+        let speedOverride = value(after: "--selftest-speed-first").map { $0 == "on" }
+        if let speedOverride { coordinator.settings.speedFirstInPasteApps = speedOverride }
+        defer { if speedOverride != nil { coordinator.settings.speedFirstInPasteApps = savedSpeed } }
         var reports: [String] = []
         for i in 0..<repeats {
             let report = await runOnce(phrase: phrase, coordinator: coordinator)
@@ -76,7 +89,10 @@ enum SelfTest {
         if let target = value(after: "--selftest-target") {
             let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "none"
             guard front == target else { return "SELFTEST ABORT: frontmost app is \(front), expected \(target)" }
+            // Re-checked right before every write: if the user switches apps mid-run, nothing is typed there.
+            coordinator.insertion.targetGuard = { NSWorkspace.shared.frontmostApplication?.bundleIdentifier == target }
         }
+        defer { coordinator.insertion.targetGuard = nil }
         let voice = value(after: "--selftest-voice")
         guard let pcm = await synthesize(phrase, voice: voice), !pcm.isEmpty else { return "SELFTEST FAIL: speech synthesis failed" }
         let source = SyntheticAudioSource(pcm: pcm)
@@ -117,6 +133,8 @@ enum SelfTest {
         first_partial_ms: \(ms(metrics?.firstPartial))
         release_to_final_ms: \(ms(metrics?.releaseToFinal))
         formatting_ms: \(ms(metrics?.formattingTime))
+        insert_steps: \(coordinator.insertion.lastTimings)
+        release_to_first_text_ms: \(ms(metrics?.releaseToFirstText))
         release_to_insert_ms: \(ms(metrics?.releaseToInsert))
         api_ms: \(ms(metrics?.apiLatency))
         text: \(text)\(readback)

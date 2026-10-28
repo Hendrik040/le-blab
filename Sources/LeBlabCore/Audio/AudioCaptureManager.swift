@@ -55,18 +55,53 @@ public final class AudioCaptureManager: AudioCapturing {
     private let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: Double(PCMFormat.sampleRate),
                                              channels: 1, interleaved: true)!
 
+    /// An engine built and prepared ahead of time (not started: the mic is not live) so that pressing
+    /// the shortcut only has to start it.
+    private var prepared: (engine: AVAudioEngine, deviceUID: String?, observer: NSObjectProtocol)?
+    /// Diagnostics: how long the last `start` took until the engine was running.
+    public private(set) var lastStartDuration: TimeInterval = 0
+
     public init() {}
+
+    /// Builds and prepares the next engine in the background of an idle moment. Does not start capture.
+    public func prewarm(deviceUID: String?) {
+        guard !running, AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { return }
+        if let p = prepared, p.deviceUID == deviceUID { return }
+        discardPrepared()
+        let engine = makeEngine(deviceUID: deviceUID)
+        guard engine.inputNode.outputFormat(forBus: 0).sampleRate > 0 else { return }
+        engine.prepare()
+        // A device change while idle invalidates the prepared engine.
+        let observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine,
+                                                              queue: .main) { [weak self] _ in self?.discardPrepared() }
+        prepared = (engine, deviceUID, observer)
+    }
+
+    /// Diagnostics only.
+    public func discardPreparedForTesting() { discardPrepared() }
+
+    private func discardPrepared() {
+        if let p = prepared {
+            NotificationCenter.default.removeObserver(p.observer)
+            p.engine.stop()
+        }
+        prepared = nil
+    }
 
     public func start(deviceUID: String?) throws {
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { throw AudioCaptureError.permissionDenied }
-        stop()
+        let t0 = ProcessInfo.processInfo.systemUptime
+        stop(rewarm: false)
         self.deviceUID = deviceUID
         vad.reset()
         try startEngine()
         running = true
+        lastStartDuration = ProcessInfo.processInfo.systemUptime - t0
     }
 
-    public func stop() {
+    public func stop() { stop(rewarm: true) }
+
+    private func stop(rewarm: Bool) {
         running = false
         if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
         configObserver = nil
@@ -76,9 +111,13 @@ public final class AudioCaptureManager: AudioCapturing {
         }
         engine = nil
         converter = nil
+        if rewarm {
+            let uid = deviceUID
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.prewarm(deviceUID: uid) }
+        }
     }
 
-    private func startEngine() throws {
+    private func makeEngine(deviceUID: String?) -> AVAudioEngine {
         let engine = AVAudioEngine()
         let input = engine.inputNode
         if let uid = deviceUID, let id = AudioDevices.deviceID(forUID: uid), let unit = input.audioUnit {
@@ -87,6 +126,20 @@ public final class AudioCaptureManager: AudioCapturing {
                                               &deviceID, UInt32(MemoryLayout<AudioDeviceID>.size))
             if status != noErr { Log.audio.error("Selecting input device failed (\(status)); using system default") }
         }
+        return engine
+    }
+
+    private func startEngine() throws {
+        let engine: AVAudioEngine
+        if let p = prepared, p.deviceUID == deviceUID {
+            NotificationCenter.default.removeObserver(p.observer)
+            prepared = nil
+            engine = p.engine
+        } else {
+            discardPrepared()
+            engine = makeEngine(deviceUID: deviceUID)
+        }
+        let input = engine.inputNode
         let inFormat = input.outputFormat(forBus: 0)
         guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else { throw AudioCaptureError.noInputDevice }
         guard let converter = AVAudioConverter(from: inFormat, to: outputFormat) else {

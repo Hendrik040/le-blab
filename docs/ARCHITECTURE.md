@@ -150,3 +150,34 @@ shows "…" dots and a shimmering Mistral-gradient headband while transcribing, 
 when text lands, and goes ✕ ✕ on errors. The same sprite renders the app icon
 (`--render-assets`), and a separate 18×16 silhouette is the menu bar template icon. The overlay is
 a non-activating panel; the duck pops up from behind the pill (spring) when dictation starts.
+
+## Latency cuts (v1.1)
+
+Measured clock now starts at the **actual key release** (earlier figures started after the 120 ms
+capture tail and were ~120 ms optimistic).
+
+| Cut | What it does | Risk control |
+|---|---|---|
+| Skip the model for clean transcripts | `FormattingRouter` sends text to the LLM only for self-corrections, enumerations, spoken punctuation/URLs, spelled-out numbers, stutters, fillers like "you know", or > 60 words. Simple fillers ("um,", "äh") are removed locally. | Ambiguous → model. English "um/uh" are only fillers when set off by punctuation, because German "um" means "at". Toggle: Settings → Formatting → Speed. |
+| Optimistic insert (native apps) | Locally cleaned text is inserted at once via Accessibility; the polished text replaces exactly that range when it arrives. | Replaced only if the same field is focused, the caret is right after our text and the text is unchanged; otherwise the user's document is left alone (polished text stays copyable). Browsers/Electron/terminals keep the wait-then-paste path. |
+| Adaptive release tail | The 120 ms post-release capture is skipped when the last ~150 ms before release were silent. | Any voiced chunk in that window keeps the tail. |
+| No modifier wait for AX inserts | Found while measuring: insertion waited up to 400 ms for held modifiers (⌃⇧ release order). Only synthetic-key paths (paste, typing) need that wait. | Paste/typing still wait. |
+
+## Latency v1.2 — "split second" pass
+
+Goal: text in place in well under a second after key release, never twice.
+
+| Change | Effect (measured, in-memory speech, M4 Max) |
+|---|---|
+| Streaming delay 480 → **240 ms**, tighter settle (look-ahead + 60 ms, 100 ms quiet) | Release → final transcript ~600–830 ms → ~400–500 ms. 240 ms matched 480 ms accuracy on the test clips; 160 ms did not ("maria", German "ähm" → "dem"). |
+| Speculative formatting | The live text goes to the formatter at release and when you pause while holding, in parallel with transcription. Reused only if the final words match (a trailing period may differ). |
+| Full ⌘V chord when pasting | Le Blab posted only V-with-Command, leaving macOS's combined keyboard state thinking ⌘ was still held: the next insertion waited ~435 ms and its paste could get lost. Now ⌘↓ V↓ V↑ ⌘↑. |
+| AX write confirmation window 30 → 250 ms (polling), per-app paste fallback | Apps that apply Accessibility writes late no longer get a second copy via paste — the cause of duplicate text. Apps whose writes don't confirm switch to paste for the session. |
+| Replace safety | If a field ignores the selection and appends the polished text, the provisional copy is removed. |
+| Pre-warmed audio engine | Engine prepared (not started — mic not live) after each dictation and at launch: start 44 → ~12 ms. |
+| Always-on bubble | Reacts the instant the shortcut goes down (pixel bars follow your voice during the 200 ms chord debounce); the full overlay fades in in 60 ms with the duck already up. |
+| Speed first in paste apps (on by default) | Browsers/Slack/Electron can't be polished in place; this pastes the locally cleaned text immediately instead of waiting ~0.6 s for the model. Trade-off: self-corrections aren't applied there. Settings → Formatting → Speed. |
+
+Measured (release → text visible, p50): TextEdit clean 523–554 ms, raw ~525–580 ms, correction-sentence first
+text 508 ms (polished in place at ~1.15–1.4 s), Chrome clean ~530–540 ms, Chrome correction sentence 573 ms with
+Speed first (~1.2 s when waiting for the model). No duplicate insertions in any undisturbed run.

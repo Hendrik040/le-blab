@@ -37,6 +37,9 @@ final class AppCoordinator: ObservableObject, DictationEnvironment {
     let controller: DictationController
     let keychain = KeychainStore()
     private(set) lazy var overlay = OverlayController(coordinator: self)
+    private(set) lazy var bubble = BubbleController(coordinator: self)
+    /// Only the normal app instance shows the idle bubble (not self-test/benchmark helpers).
+    private var bubbleActive = false
     private(set) lazy var windows = WindowManager(coordinator: self)
 
     @Published private(set) var keyState: KeyState = .loading
@@ -49,6 +52,8 @@ final class AppCoordinator: ObservableObject, DictationEnvironment {
     private let micCapture = AudioCaptureManager()
     private var cancellables = Set<AnyCancellable>()
     private var syntheticMicrophone = false
+    /// Benchmark-only runtime override (never persisted).
+    private var formattingOverride: FormattingMode?
 
     private init() {
         history = HistoryStore(enabled: settings.historyEnabled)
@@ -69,6 +74,30 @@ final class AppCoordinator: ObservableObject, DictationEnvironment {
 
     func launch() {
         Log.app.info("Le Blab launching")
+        if let config = SelfTest.value(after: "--bench") {
+            // Benchmark instance: drives other apps; registers no hotkeys of its own.
+            Task {
+                let code = await BenchHarness.run(configPath: config)
+                exit(code)
+            }
+            return
+        }
+        if CommandLine.arguments.contains("--bench-control") {
+            // Opt-in only: lets a local benchmark run switch raw/smart formatting without touching saved settings.
+            DistributedNotificationCenter.default().addObserver(forName: BenchHarness.formattingNotification, object: nil,
+                                                                queue: .main) { [weak self] note in
+                let mode = note.object as? String
+                MainActor.assumeIsolated { self?.formattingOverride = mode.flatMap(FormattingMode.init(rawValue:)) }
+                // ACK so the harness knows the switch landed before it presses the shortcut.
+                DistributedNotificationCenter.default().postNotificationName(BenchHarness.ackNotification, object: mode,
+                                                                             userInfo: nil, deliverImmediately: true)
+            }
+        }
+        if let path = SelfTest.value(after: "--measure-mic") {
+            // Diagnostics: microphone start latency, cold engine vs pre-warmed (briefly opens the mic).
+            Task { await MicStartProbe.run(capture: micCapture, deviceUID: settings.inputDeviceUID, output: path); NSApp.terminate(nil) }
+            return
+        }
         if let dir = SelfTest.value(after: "--render-assets") {
             AssetRenderer.run(into: dir)
             NSApp.terminate(nil)
@@ -95,7 +124,9 @@ final class AppCoordinator: ObservableObject, DictationEnvironment {
         activateHotkey()
 
         controller.$state.removeDuplicates().sink { [weak self] state in
-            self?.overlay.update(state: state)
+            guard let self else { return }
+            self.overlay.update(state: state)
+            if self.bubbleActive { self.bubble.setOverlayShowing(state != .idle) }
         }.store(in: &cancellables)
         controller.$isRecording.removeDuplicates().sink { [weak self] recording in
             self?.hotkeys.setCancelActive(recording)
@@ -109,6 +140,9 @@ final class AppCoordinator: ObservableObject, DictationEnvironment {
             Task { await runSelfTest(phrase: phrase, outputPath: SelfTest.requestedOutputPath(), quitAfter: true) }
             return
         }
+        bubbleActive = true
+        bubble.refresh()
+        micCapture.prewarm(deviceUID: settings.inputDeviceUID)
         if !settings.hasCompletedOnboarding || keyState == .missing {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 guard let self else { return }
@@ -155,7 +189,8 @@ final class AppCoordinator: ObservableObject, DictationEnvironment {
     func loadAPIKey() {
         // Test-only: automated self-tests may pass the key via the environment so rebuilt dev
         // binaries don't trigger a Keychain prompt each time. Normal launches use the Keychain only.
-        if SelfTest.requestedPhrase() != nil, let key = ProcessInfo.processInfo.environment["MISTRAL_API_KEY"], !key.isEmpty {
+        let testRun = SelfTest.requestedPhrase() != nil || CommandLine.arguments.contains("--bench-control")
+        if testRun, let key = ProcessInfo.processInfo.environment["MISTRAL_API_KEY"], !key.isEmpty {
             keyCache.set(key)
             keyState = .present
             return
@@ -212,17 +247,20 @@ final class AppCoordinator: ObservableObject, DictationEnvironment {
     var autoStopOnSilence: Bool { settings.autoStopOnSilence }
     var inputDeviceUID: String? { settings.inputDeviceUID }
     var shortcutLabel: String { settings.hotkey.displayString }
+    var speedFirstInPasteApps: Bool { (formattingOverride ?? settings.formattingMode) == .smart && settings.speedFirstInPasteApps }
+    var optimisticInsertEnabled: Bool { (formattingOverride ?? settings.formattingMode) == .smart && settings.optimisticInsert }
     var activationFeedbackDelay: TimeInterval { settings.hotkey.needsChordDebounce && !syntheticMicrophone ? 0.2 : 0 }
     var formattingLabel: String { "smart (\(settings.formatterModel))" }
 
     func makeFormatter() -> TranscriptFormatting {
-        switch settings.formattingMode {
+        switch formattingOverride ?? settings.formattingMode {
         case .raw:
             return RawFormatter(vocabulary: VocabularyCorrector(entries: settings.vocabulary))
         case .smart:
             let keyCache = self.keyCache, regionBox = self.regionBox
             let client = MistralChatClient(region: { regionBox.get() }, apiKey: { keyCache.get() })
-            return SmartFormatter(client: client, model: settings.formatterModel, vocabulary: settings.vocabulary)
+            return SmartFormatter(client: client, model: settings.formatterModel, vocabulary: settings.vocabulary,
+                                  routeCleanTranscriptsLocally: settings.skipCleanTranscripts)
         }
     }
 
@@ -240,6 +278,16 @@ final class AppCoordinator: ObservableObject, DictationEnvironment {
     func record(metrics: DictationMetrics) {
         diagnostics.record(metrics)
         if metrics.outcome.hasPrefix("error") { diagnostics.recordError(metrics.outcome) }
+        if CommandLine.arguments.contains("--bench-control") {
+            // Timings only (no text): lets the harness cross-check its black-box numbers against ours.
+            let timeline: [String: Double] = ["releaseToInsert": metrics.releaseToInsert ?? -1,
+                                              "releaseToFinal": metrics.releaseToFinal ?? -1,
+                                              "formatting": metrics.formattingTime ?? -1]
+            if let data = try? JSONSerialization.data(withJSONObject: timeline), let json = String(data: data, encoding: .utf8) {
+                DistributedNotificationCenter.default().postNotificationName(BenchHarness.timelineNotification, object: json,
+                                                                             userInfo: nil, deliverImmediately: true)
+            }
+        }
     }
 
     // MARK: - Actions

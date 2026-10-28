@@ -41,12 +41,21 @@ public final class SettingsStore: ObservableObject {
     @Published public var language: String { didSet { save(language, "language") } }
     @Published public var formattingMode: FormattingMode { didSet { save(formattingMode, "formattingMode") } }
     @Published public var formatterModel: String { didSet { save(formatterModel, "formatterModel") } }
+    /// Smart mode: skip the language model when the transcript needs nothing it can uniquely fix.
+    @Published public var skipCleanTranscripts: Bool { didSet { save(skipCleanTranscripts, "skipCleanTranscripts") } }
+    /// Smart mode in native apps: insert cleaned text immediately, swap in the polished version after.
+    @Published public var optimisticInsert: Bool { didSet { save(optimisticInsert, "optimisticInsert") } }
+    /// Smart mode in apps that can't be edited in place (browsers, Slack, Electron): paste the locally
+    /// cleaned text right away instead of waiting for the language model.
+    @Published public var speedFirstInPasteApps: Bool { didSet { save(speedFirstInPasteApps, "speedFirstInPasteApps") } }
     @Published public var vocabulary: [VocabularyEntry] { didSet { save(vocabulary, "vocabulary") } }
     @Published public var region: MistralAPI.Region { didSet { save(region, "region") } }
     @Published public var insertionMethod: InsertionMethod { didSet { save(insertionMethod, "insertionMethod") } }
     @Published public var restoreClipboard: Bool { didSet { save(restoreClipboard, "restoreClipboard") } }
     @Published public var playSounds: Bool { didSet { save(playSounds, "playSounds") } }
     @Published public var showLivePreview: Bool { didSet { save(showLivePreview, "showLivePreview") } }
+    /// Small always-on bubble at the bottom of the screen that reacts instantly to the shortcut.
+    @Published public var showIdleBubble: Bool { didSet { save(showIdleBubble, "showIdleBubble") } }
     /// Toggle mode only: stop when Voxtral's turn detection says the speaker is done.
     @Published public var autoStopOnSilence: Bool { didSet { save(autoStopOnSilence, "autoStopOnSilence") } }
     @Published public var inputDeviceUID: String? { didSet { save(inputDeviceUID, "inputDeviceUID") } }
@@ -60,16 +69,20 @@ public final class SettingsStore: ObservableObject {
         activationMode = Self.load(defaults, "activationMode") ?? .holdToTalk
         hotkey = Self.load(defaults, "hotkey") ?? .controlShift
         quality = Self.load(defaults, "quality") ?? .fast
-        streamingDelayMs = Self.load(defaults, "streamingDelayMs") ?? 480
+        streamingDelayMs = Self.load(defaults, "streamingDelayMs") ?? 240
         language = Self.load(defaults, "language") ?? "auto"
         formattingMode = Self.load(defaults, "formattingMode") ?? .smart
         formatterModel = Self.load(defaults, "formatterModel") ?? MistralAPI.Models.defaultFormatter
+        skipCleanTranscripts = Self.load(defaults, "skipCleanTranscripts") ?? true
+        optimisticInsert = Self.load(defaults, "optimisticInsert") ?? true
+        speedFirstInPasteApps = Self.load(defaults, "speedFirstInPasteApps") ?? true
         vocabulary = Self.load(defaults, "vocabulary") ?? VocabularyEntry.defaults
         region = Self.load(defaults, "region") ?? .global
         insertionMethod = Self.load(defaults, "insertionMethod") ?? .automatic
         restoreClipboard = Self.load(defaults, "restoreClipboard") ?? true
         playSounds = Self.load(defaults, "playSounds") ?? true
         showLivePreview = Self.load(defaults, "showLivePreview") ?? true
+        showIdleBubble = Self.load(defaults, "showIdleBubble") ?? true
         autoStopOnSilence = Self.load(defaults, "autoStopOnSilence") ?? false
         inputDeviceUID = Self.load(defaults, "inputDeviceUID") ?? nil
         historyEnabled = Self.load(defaults, "historyEnabled") ?? false
@@ -96,8 +109,10 @@ public final class SettingsStore: ObservableObject {
         activationMode = fresh.activationMode; hotkey = fresh.hotkey; quality = fresh.quality
         streamingDelayMs = fresh.streamingDelayMs; language = fresh.language; formattingMode = fresh.formattingMode
         formatterModel = fresh.formatterModel; vocabulary = fresh.vocabulary; region = fresh.region
+        skipCleanTranscripts = fresh.skipCleanTranscripts; optimisticInsert = fresh.optimisticInsert
+        speedFirstInPasteApps = fresh.speedFirstInPasteApps
         insertionMethod = fresh.insertionMethod; restoreClipboard = fresh.restoreClipboard; playSounds = fresh.playSounds
-        showLivePreview = fresh.showLivePreview; autoStopOnSilence = fresh.autoStopOnSilence; inputDeviceUID = nil
+        showLivePreview = fresh.showLivePreview; showIdleBubble = fresh.showIdleBubble; autoStopOnSilence = fresh.autoStopOnSilence; inputDeviceUID = nil
         historyEnabled = false; historyRetentionDays = fresh.historyRetentionDays
     }
 

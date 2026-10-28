@@ -64,7 +64,7 @@ public struct SessionOptions: Sendable {
 
     public init(realtime: TranscriptionConfig, accuracyModel: String? = nil,
                 fallbackModel: String = MistralAPI.Models.miniBatch, maxReconnects: Int = 2, finalTimeout: TimeInterval = 6,
-                earlyFinalization: Bool = true, settleWindow: TimeInterval = 0.15) {
+                earlyFinalization: Bool = true, settleWindow: TimeInterval = 0.1) {
         self.realtime = realtime
         self.accuracyModel = accuracyModel
         self.fallbackModel = fallbackModel
@@ -148,7 +148,9 @@ public final class TranscriptionSession {
     public func finish() async -> Result<TranscriptResult, TranscriptionError> {
         guard phase == .streaming else { return .failure(.cancelled) }
         phase = .finalizing
-        timeline.mark(\.released)
+        // The controller marks `released` at the actual key release; standalone use (probe) marks it here.
+        if timeline.released == nil { timeline.mark(\.released) }
+        timeline.mark(\.audioEnded)
         releasedAt = timeline.now()
         capturedDuration = PCMFormat.duration(ofBytes: audio.count)
 
@@ -309,7 +311,7 @@ public final class TranscriptionSession {
         guard options.earlyFinalization, options.accuracyModel == nil, streamFinal == nil, !streamDead,
               stream != nil, let releasedAt else { return nil }
         let now = timeline.now()
-        let lookAhead = Double(options.realtime.targetStreamingDelayMs ?? 480) / 1000 + 0.12
+        let lookAhead = Double(options.realtime.targetStreamingDelayMs ?? 240) / 1000 + 0.06
         guard now - releasedAt >= lookAhead else { return nil }
         if let lastDeltaAt, now - lastDeltaAt < options.settleWindow { return nil }
         let text = TranscriptAssembler.normalize(assembler.streamed)

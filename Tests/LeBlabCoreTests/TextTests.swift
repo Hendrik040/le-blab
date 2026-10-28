@@ -72,10 +72,23 @@ struct TextTests {
     }
 
     @Test func localCleanupRemovesFillersInEnglishAndGerman() {
-        #expect(LocalCleanup.apply("um yes") == "Yes")
+        #expect(LocalCleanup.apply("um, yes") == "Yes")
+        #expect(LocalCleanup.apply("Hey David, um, I just wanted to check") == "Hey David, I just wanted to check")
         #expect(LocalCleanup.apply("ähm ja genau") == "Ja genau")
         #expect(LocalCleanup.apply("uh, sure") == "Sure")
         #expect(LocalCleanup.apply("umbrella") == "Umbrella")   // not a filler
+    }
+
+    @Test func bareEnglishFillersAreRemovedButNotGermanUm() {
+        #expect(LocalCleanup.apply("um I think we should ship it") == "I think we should ship it")
+        #expect(LocalCleanup.apply("so uh we can go") == "So we can go")
+        #expect(LocalCleanup.apply("Wir sehen uns um, äh, 16 Uhr.") == "Wir sehen uns um, 16 Uhr.")
+        #expect(LocalCleanup.apply("Es geht um die Präsentation.", language: "de") == "Es geht um die Präsentation.")
+    }
+
+    @Test func germanUmIsAWordNotAFiller() {
+        #expect(LocalCleanup.apply("Können wir das um 16 Uhr machen?") == "Können wir das um 16 Uhr machen?")
+        #expect(LocalCleanup.apply("Es geht um die Präsentation.") == "Es geht um die Präsentation.")
     }
 
     @Test func rawFormatterNeverEndsWithNewline() async {
@@ -88,7 +101,7 @@ struct TextTests {
     @Test func smartFormatterSkipsNetworkForShortUtterances() async {
         let client = MistralChatClient(region: { .global }, apiKey: { nil })
         let smart = SmartFormatter(client: client, model: "x", vocabulary: [])
-        let result = await smart.format("um yes", language: "en")
+        let result = await smart.format("um, yes", language: "en")
         #expect(result.text == "Yes")
         #expect(result.fallbackReason == "short utterance")
     }
@@ -96,8 +109,8 @@ struct TextTests {
     @Test func smartFormatterFallsBackToRawWhenTheModelIsUnavailable() async {
         let client = MistralChatClient(region: { .global }, apiKey: { nil })   // no key → request fails
         let smart = SmartFormatter(client: client, model: "x", vocabulary: VocabularyEntry.defaults)
-        let result = await smart.format("um please ask code rabbit to review the pull request", language: "en")
-        #expect(result.text == "Please ask CodeRabbit to review the pull request")
+        let result = await smart.format("um, please ask code rabbit to review the pull request, actually the issue", language: "en")
+        #expect(result.text == "Please ask CodeRabbit to review the pull request, actually the issue")
         #expect(!result.usedLanguageModel)
         #expect(result.fallbackReason == "language model unavailable")
     }

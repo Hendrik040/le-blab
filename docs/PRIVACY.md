@@ -11,7 +11,7 @@ settings, so it never claims zero retention.
 | Same audio again (accuracy mode only) | Mistral API, `voxtral-small-transcribe-3-0` | On release |
 | Same audio (network-failure fallback / Retry only) | Mistral API, `voxtral-mini-transcribe-3-0` | Only if the stream failed |
 | Your vocabulary terms | Mistral API (`context_bias`) | Start of each dictation |
-| Transcript text (smart formatting only) | Mistral API, `mistral-small-2603` | After each dictation |
+| Transcript text (smart formatting only) | Mistral API, `mistral-small-2603` | Only when it needs cleanup (self-corrections, lists, spoken punctuation/URLs, spelled-out numbers, long dictation); clean transcripts are finished locally. To save time the live transcript may be sent a moment early (at key release or while you pause), but only text that would go to the model anyway |
 | Nothing but a TLS handshake | `HEAD /v1/chat/completions`, no key, no body | Connection warm-up while recording |
 
 Never sent: other apps' text (the single character next to the cursor is read locally for

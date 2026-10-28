@@ -66,6 +66,7 @@ struct GeneralSettings: View {
                 }
                 Toggle("Restore my clipboard after pasting", isOn: $settings.restoreClipboard)
                 Toggle("Show live transcript while speaking", isOn: $settings.showLivePreview)
+                Toggle("Show the Le Blab bubble when idle", isOn: $settings.showIdleBubble)
                 Toggle("Play sounds", isOn: $settings.playSounds)
                 Toggle("Launch at login", isOn: Binding(get: { coordinator.launchAtLogin }, set: { coordinator.launchAtLogin = $0 }))
                 PermissionRow(title: "Accessibility access (insert text, shortcut)", status: permissions.accessibility,
@@ -160,8 +161,8 @@ struct TranscriptionSettings: View {
 
     private func delayLabel(_ ms: Int) -> String {
         switch ms {
-        case 240: return "240 ms — fastest"
-        case 480: return "480 ms — balanced (default)"
+        case 240: return "240 ms — fast (default)"
+        case 480: return "480 ms — balanced"
         case 2400: return "2400 ms — most accurate"
         default: return "\(ms) ms"
         }
@@ -203,6 +204,17 @@ struct FormattingSettings: View {
                     Picker("Model", selection: $settings.formatterModel) {
                         ForEach(MistralAPI.Models.formatterChoices, id: \.self) { Text($0).tag($0) }
                     }
+                }
+                Section("Speed") {
+                    Toggle("Skip the model when the transcript is already clean", isOn: $settings.skipCleanTranscripts)
+                    Text("Voxtral 3 already adds punctuation and capitals. The model is only called for corrections, lists, spoken punctuation or URLs, spelled-out numbers and long dictations — those transcripts are also the only ones sent to it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Insert immediately, polish in place (native apps)", isOn: $settings.optimisticInsert)
+                    Toggle("Speed first in browsers & chat apps (skip the AI polish there)", isOn: $settings.speedFirstInPasteApps)
+                    Text("On by default. Chrome, Slack, Claude and other web/Electron apps can't be edited in place, so polishing there means waiting for the model (~0.6 s more). With this on they get the locally cleaned text instantly, but spoken self-corrections (\"actually, make that four\") are not applied there. Turn it off to always wait for the polished text.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("In apps like Notes, TextEdit and Mail compose fields that support it, the cleaned transcript appears right away and is replaced by the formatted version a moment later — unless you've already started editing it.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Try it") {
                     TextField("Sample transcript", text: $sample, axis: .vertical).lineLimit(2...4)

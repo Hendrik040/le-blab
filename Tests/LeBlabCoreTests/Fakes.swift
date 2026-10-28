@@ -1,3 +1,4 @@
+import ApplicationServices
 import Foundation
 @testable import LeBlabCore
 
@@ -119,15 +120,61 @@ final class FakeAudio: AudioCapturing {
     }
     func stop() { running = false }
     func speak(_ bytes: Int = 3200) { onChunk?(AudioChunk(pcm: Data(repeating: 1, count: bytes), level: 0.5, voiced: true)) }
+    /// 50 ms unvoiced chunks.
+    func silence(_ chunks: Int = 7) {
+        for _ in 0..<chunks { onChunk?(AudioChunk(pcm: Data(count: 1600), level: 0, voiced: false)) }
+    }
 }
 
 @MainActor
 final class FakeInserter: TextInserting {
     var inserted: [String] = []
     var outcome: InsertionOutcome = .pasted
+    /// Native-app behaviour: provisional insertion supported.
+    var supportsProvisional = false
+    /// Simulates the user editing the text before the polished version arrives.
+    var replaceSucceeds = true
+    var provisional: [String] = []
+    var replacements: [(from: String, to: String)] = []
+    /// What the "document" shows after all operations.
+    var document: [String] = []
+
     func insert(_ text: String) async -> InsertionOutcome {
         inserted.append(text)
+        document.append(text)
         return outcome
+    }
+
+    /// Field accepts text but can't be read back (handle not replaceable).
+    var provisionalReplaceable = true
+
+    func insertProvisional(_ text: String) async -> ProvisionalInsertion? {
+        guard supportsProvisional else { return nil }
+        provisional.append(text)
+        document.append(text)
+        // A placeholder element marks the handle replaceable; the fake never touches it.
+        let element: AXUIElement? = provisionalReplaceable ? AXUIElementCreateSystemWide() : nil
+        return ProvisionalInsertion(insertedText: text, element: element, range: CFRange(location: 0, length: text.utf16.count))
+    }
+
+    func replaceProvisional(_ insertion: ProvisionalInsertion, with text: String) async -> ReplacementOutcome {
+        replacements.append((insertion.insertedText, text))
+        guard insertion.isReplaceable else { return .notReplaceable }
+        guard replaceSucceeds, let i = document.lastIndex(of: insertion.insertedText) else { return .keptProvisional }
+        document[i] = text
+        return .replaced
+    }
+}
+
+/// Formatter with a scripted provisional text and a delayed final result.
+struct FakeFormatter: TranscriptFormatting {
+    var provisional: String?
+    var final: String
+    var delay: TimeInterval
+    func provisionalText(for transcript: String, language: String?) -> String? { provisional }
+    func format(_ transcript: String, language: String?) async -> FormattedText {
+        try? await Task.sleep(nanoseconds: UInt64(delay * 1e9))
+        return FormattedText(text: final, usedLanguageModel: provisional != nil, fallbackReason: nil)
     }
 }
 
@@ -140,6 +187,9 @@ final class FakeEnvironment: DictationEnvironment {
     var inputDeviceUID: String?
     var shortcutLabel = "⌥Space"
     var activationFeedbackDelay: TimeInterval = 0
+    var optimisticInsertEnabled = false
+    var speedFirstInPasteApps = false
+    var formatter: TranscriptFormatting?
     var formattingLabel = "raw"
     var accuracy = false
     var history: [HistoryEntry] = []
@@ -152,7 +202,9 @@ final class FakeEnvironment: DictationEnvironment {
         SessionOptions(realtime: TranscriptionConfig(model: MistralAPI.Models.realtime, targetStreamingDelayMs: 480, turnDetection: turnDetection),
                        accuracyModel: accuracy ? MistralAPI.Models.smallBatch : nil, maxReconnects: 2, finalTimeout: 0.3)
     }
-    func makeFormatter() -> TranscriptFormatting { RawFormatter(vocabulary: VocabularyCorrector(entries: VocabularyEntry.defaults)) }
+    func makeFormatter() -> TranscriptFormatting {
+        formatter ?? RawFormatter(vocabulary: VocabularyCorrector(entries: VocabularyEntry.defaults))
+    }
     func recordingDidStart() { started += 1 }
     func recordingDidStop(cancelled: Bool) { stopped.append(cancelled) }
     func record(history entry: HistoryEntry) { history.append(entry) }

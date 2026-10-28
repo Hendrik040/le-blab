@@ -129,13 +129,11 @@ final class OverlayController {
             model.duckUp = false
             panel.orderFrontRegardless()
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.12
+                ctx.duration = 0.06
                 panel.animator().alphaValue = 1
             }
-            // The duck pops up from behind the pill a beat after it appears.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                withAnimation(.spring(response: 0.38, dampingFraction: 0.55)) { self?.model.duckUp = true }
-            }
+            // The duck pops up from behind the pill right away.
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { model.duckUp = true }
         }
     }
 

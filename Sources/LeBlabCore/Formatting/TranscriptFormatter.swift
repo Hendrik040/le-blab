@@ -18,6 +18,13 @@ public struct FormattedText: Equatable, Sendable {
 
 public protocol TranscriptFormatting: Sendable {
     func format(_ transcript: String, language: String?) async -> FormattedText
+    /// Text that can go into the document right away while `format` is still running (locally
+    /// cleaned transcript), or nil when `format` will be instant anyway.
+    func provisionalText(for transcript: String, language: String?) -> String?
+}
+
+public extension TranscriptFormatting {
+    func provisionalText(for transcript: String, language: String?) -> String? { nil }
 }
 
 /// Mode A: minimal processing.
@@ -43,24 +50,41 @@ public struct SmartFormatter: TranscriptFormatting {
     let vocabularyEntries: [VocabularyEntry]
     let vocabulary: VocabularyCorrector
     let timeout: TimeInterval
+    /// Skip the model when `FormattingRouter` finds nothing for it to do.
+    let routeCleanTranscriptsLocally: Bool
 
-    public init(client: MistralChatClient, model: String, vocabulary: [VocabularyEntry], timeout: TimeInterval = 4) {
+    public init(client: MistralChatClient, model: String, vocabulary: [VocabularyEntry], timeout: TimeInterval = 4,
+                routeCleanTranscriptsLocally: Bool = true) {
         self.client = client
         self.model = model
         self.vocabularyEntries = vocabulary
         self.vocabulary = VocabularyCorrector(entries: vocabulary)
         self.timeout = timeout
+        self.routeCleanTranscriptsLocally = routeCleanTranscriptsLocally
+    }
+
+    /// nil when the result will be local (instant); otherwise the locally cleaned text to show first.
+    public func provisionalText(for transcript: String, language: String?) -> String? {
+        let pre = vocabulary.apply(TranscriptAssembler.normalize(transcript))
+        guard localReason(pre) == nil else { return nil }
+        return RawFormatter.finalize(LocalCleanup.apply(pre, language: language))
+    }
+
+    /// Why the model can be skipped for this text, or nil if it should run.
+    private func localReason(_ pre: String) -> String? {
+        if pre.isEmpty { return "empty" }
+        // Very short utterances ("yes", "sounds good") don't justify a network round-trip.
+        if pre.split(whereSeparator: \.isWhitespace).count <= 3 { return "short utterance" }
+        if routeCleanTranscriptsLocally, case .local(let reason) = FormattingRouter.decide(pre) { return reason }
+        return nil
     }
 
     public func format(_ transcript: String, language: String?) async -> FormattedText {
         let pre = vocabulary.apply(TranscriptAssembler.normalize(transcript))
         guard !pre.isEmpty else { return FormattedText(text: "", usedLanguageModel: false, fallbackReason: nil) }
-
-        // Very short utterances ("yes", "sounds good") don't justify a network round-trip.
-        let words = pre.split(whereSeparator: \.isWhitespace)
-        if words.count <= 3 {
-            return FormattedText(text: RawFormatter.finalize(LocalCleanup.apply(pre)), usedLanguageModel: false,
-                                 fallbackReason: "short utterance")
+        if let reason = localReason(pre) {
+            return FormattedText(text: RawFormatter.finalize(LocalCleanup.apply(pre, language: language)), usedLanguageModel: false,
+                                 fallbackReason: reason)
         }
 
         let messages = FormatterPrompt.messages(transcript: pre, language: language,
@@ -71,14 +95,14 @@ public struct SmartFormatter: TranscriptFormatting {
                                                maxTokens: max(64, pre.count), timeout: timeout)
         } catch {
             Log.formatting.error("Smart formatting failed: \(String(describing: error), privacy: .public)")
-            return FormattedText(text: RawFormatter.finalize(LocalCleanup.apply(pre)), usedLanguageModel: false,
+            return FormattedText(text: RawFormatter.finalize(LocalCleanup.apply(pre, language: language)), usedLanguageModel: false,
                                  fallbackReason: "language model unavailable")
         }
 
         let cleaned = vocabulary.apply(FormatterGuard.stripWrapping(output))
         if let rejection = FormatterGuard.rejectionReason(input: pre, output: cleaned) {
             Log.formatting.info("Rejected LLM output: \(rejection, privacy: .public)")
-            return FormattedText(text: RawFormatter.finalize(LocalCleanup.apply(pre)), usedLanguageModel: false,
+            return FormattedText(text: RawFormatter.finalize(LocalCleanup.apply(pre, language: language)), usedLanguageModel: false,
                                  fallbackReason: rejection)
         }
         return FormattedText(text: FormatterGuard.finalizePreservingLayout(cleaned), usedLanguageModel: true, fallbackReason: nil)
@@ -87,14 +111,34 @@ public struct SmartFormatter: TranscriptFormatting {
 
 /// Offline cleanup used when the LLM is skipped: filler removal + first-letter capitalization.
 public enum LocalCleanup {
+    /// Hesitations that never mean anything in English or German.
     private static let fillers = try! NSRegularExpression(
-        pattern: #"(?i)(?<![\p{L}])(?:u+h+m*|u+m+|e+r+m+|hm+|ä+h+m*|ö+h+m*)(?![\p{L}])[,.]?\s*"#)
+        pattern: #"(?i)(?<![\p{L}])(?:u+h+m*|e+r+m+|hm+|ä+h+m*|ö+h+m*)(?![\p{L}])[,.]?\s*"#)
+    /// "um" — a filler in English, but German for "at"/"around" ("um 16 Uhr"), so never removed in German.
+    private static let englishUm = try! NSRegularExpression(pattern: #"(?i)(?<![\p{L}])u+m+(?![\p{L}])[,.]?\s*"#)
 
-    public static func apply(_ text: String) -> String {
+    public static func apply(_ text: String, language: String? = nil) -> String {
         var t = fillers.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
+        if !LanguageGuess.isGerman(t, hint: language) {
+            t = englishUm.stringByReplacingMatches(in: t, range: NSRange(t.startIndex..., in: t), withTemplate: "")
+        }
         t = TranscriptAssembler.normalize(t)
         if let first = t.first, first.isLowercase { t = first.uppercased() + t.dropFirst() }
         return t
+    }
+}
+
+/// Cheap language hint for cleanup decisions when Voxtral doesn't report a language.
+public enum LanguageGuess {
+    private static let germanWords: Set<String> = ["ich", "und", "nicht", "ist", "wir", "das", "die", "der", "mit", "auf",
+                                                   "für", "ein", "eine", "zu", "es", "sie", "auch", "aber", "oder", "wenn",
+                                                   "dass", "noch", "uhr", "bitte", "kannst", "können", "wollte", "haben"]
+
+    public static func isGerman(_ text: String, hint: String?) -> Bool {
+        if let hint { return hint.lowercased().hasPrefix("de") }
+        if text.contains(where: { "äöüßÄÖÜ".contains($0) }) { return true }
+        let words = text.lowercased().split { !$0.isLetter }
+        return words.filter { germanWords.contains(String($0)) }.count >= 2
     }
 }
 

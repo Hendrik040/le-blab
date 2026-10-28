@@ -32,16 +32,21 @@ case "$TARGET" in
 <h3>Le Blab E2E target</h3><textarea id="t" autofocus rows="8" cols="80">Existing text.</textarea>
 <script>const t=document.getElementById('t');t.focus();t.setSelectionRange(t.value.length,t.value.length);</script>
 HTML
-    open -a "Google Chrome" --new --args --new-window "file://$PAGE"
+    open -a "Google Chrome" "file://$PAGE"
     ;;
   *) echo "unknown target $TARGET"; exit 2 ;;
 esac
-sleep 2.5
+# Wait until the target app is really frontmost (Chrome can take a few seconds to launch).
+[ -x .build/front ] || swiftc -O scripts/tools/front.swift -o .build/front
+for _ in $(seq 1 40); do [ "$(.build/front)" = "$BUNDLE" ] && break; sleep 0.25; done
+sleep 1
 BEFORE=$(.build/pbhash)
 ARGS=(--selftest "$PHRASE" --selftest-target "$BUNDLE" --selftest-output "$OUT" --selftest-readback)
 [ -n "$VOICE" ] && ARGS+=(--selftest-voice "$VOICE")
 ARGS+=(--selftest-repeat "$REPEAT")
 [ -n "${FORMATTING:-}" ] && ARGS+=(--selftest-formatting "$FORMATTING")
+[ -n "${INSERTION:-}" ] && ARGS+=(--selftest-insertion "$INSERTION")
+[ -n "${SPEED_FIRST:-}" ] && ARGS+=(--selftest-speed-first "$SPEED_FIRST")  # on | off
 # Key comes from the environment for test runs (rebuilt dev binaries would re-prompt for Keychain access).
 KEY="${MISTRAL_API_KEY:-$(security find-generic-password -s local.leblab.LeBlab -a mistral-api-key -w 2>/dev/null)}"
 open -g -n --env "MISTRAL_API_KEY=$KEY" "$APP" --args "${ARGS[@]}"
@@ -51,4 +56,6 @@ sleep 1
 AFTER=$(.build/pbhash)
 cat "$OUT" 2>/dev/null || echo "no result"
 echo "clipboard_unchanged: $([ "$BEFORE" = "$AFTER" ] && echo true || echo false)"
-open -g "$APP"   # relaunch the normal instance
+# Relaunch the normal instance (skip with NO_RELAUNCH=1 when chaining runs: a rebuilt binary asks for
+# Keychain access on launch, and that system dialog would take focus mid-test).
+[ -n "${NO_RELAUNCH:-}" ] || open -g "$APP"

@@ -63,6 +63,19 @@ enum AssetRenderer {
             if let image = renderer.nsImage { write(image, to: base.appendingPathComponent("overlay-\(name).png")) }
         }
 
+        // Idle bubble states.
+        for (name, listening, hovering) in [("idle", false, false), ("hover", false, true), ("listening", true, false)] {
+            let model = BubbleModel()
+            model.listening = listening
+            model.hovering = hovering
+            model.levels = listening ? [0.3, 0.8, 0.55, 1.0, 0.45] : Array(repeating: 0, count: 5)
+            let view = BubbleView(model: model, onClick: {})
+                .background(Color(red: 0.55, green: 0.62, blue: 0.70))
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 3
+            if let image = renderer.nsImage { write(image, to: base.appendingPathComponent("bubble-\(name).png")) }
+        }
+
         // Duck poses sheet + menu bar icons.
         let poses: [DuckPose] = [
             DuckPose(mood: .idle), DuckPose(mood: .listening, beakOpen: 1, soundLevel: 0.9, frame: 1),
