@@ -88,6 +88,9 @@ public final class DictationController: ObservableObject {
     }
 
     private var current: Recording?
+    /// The recording the microphone is capturing for. After release it stays set while the tail is
+    /// captured, so a quick re-press can cut that tail short and the late stop can't hit the new recording.
+    private var captureOwner: UUID?
     /// Seconds of unvoiced audio since the last voiced chunk.
     private var trailingSilence: TimeInterval = 0
     private var heardVoice = false
@@ -149,6 +152,7 @@ public final class DictationController: ObservableObject {
             return
         }
         discardRetainedFailure()
+        endReleaseTail()
 
         let timeline = LatencyTimeline(clock: clock)
         timeline.mark(\.pressed)
@@ -212,6 +216,7 @@ public final class DictationController: ObservableObject {
             return
         }
         timeline.mark(\.captureStarted)
+        captureOwner = id
         current = recording
         isRecording = true
         detectedLanguage = nil
@@ -272,10 +277,26 @@ public final class DictationController: ObservableObject {
                 tail = voiced == true ? self.releaseTail : 0
             }
             if tail > 0 { try? await Task.sleep(nanoseconds: UInt64(tail * 1e9)) }
-            self.audio.stop()
-            self.level = 0
+            self.stopCapture(for: recording.id)
             await self.process(recording, after: previousGate, gate: gate)
         }
+    }
+
+    /// Stops the microphone, unless it has since been handed to a newer recording.
+    private func stopCapture(for id: UUID) {
+        guard captureOwner == id else { return }
+        captureOwner = nil
+        audio.stop()
+        level = 0
+    }
+
+    /// Pressed again while the previous dictation is still capturing its release tail: end that tail
+    /// now, so its audio, chunk waiter and delayed stop don't leak into the new recording.
+    private func endReleaseTail() {
+        guard let owner = captureOwner else { return }
+        chunkWaiter?.resume(returning: nil)
+        chunkWaiter = nil
+        stopCapture(for: owner)
     }
 
     /// The user had been silent for a while before releasing: nothing left to capture.
@@ -302,8 +323,7 @@ public final class DictationController: ObservableObject {
         current = nil
         isRecording = false
         maxDurationTask?.cancel()
-        audio.stop()
-        level = 0
+        stopCapture(for: recording.id)
         recording.session.cancel()
         guard recording.revealed else {
             // Nothing was shown yet (e.g. ⌃⇧ turned out to be ⌃⇧Tab): vanish without a trace.

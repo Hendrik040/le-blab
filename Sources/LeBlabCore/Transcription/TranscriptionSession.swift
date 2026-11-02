@@ -61,10 +61,14 @@ public struct SessionOptions: Sendable {
     public var earlyFinalization: Bool
     /// No new delta for this long (after the look-ahead window has passed) = settled.
     public var settleWindow: TimeInterval
+    /// The user was still talking at release, but no flushed delta has arrived: how long past the look-ahead
+    /// window to wait before trusting the streamed text anyway. Without this, a sentence streamed while
+    /// talking ("Sounds good.") would be taken before the words still in the look-ahead arrive.
+    public var quietTailGrace: TimeInterval
 
     public init(realtime: TranscriptionConfig, accuracyModel: String? = nil,
                 fallbackModel: String = MistralAPI.Models.miniBatch, maxReconnects: Int = 2, finalTimeout: TimeInterval = 6,
-                earlyFinalization: Bool = true, settleWindow: TimeInterval = 0.1) {
+                earlyFinalization: Bool = true, settleWindow: TimeInterval = 0.1, quietTailGrace: TimeInterval = 0.25) {
         self.realtime = realtime
         self.accuracyModel = accuracyModel
         self.fallbackModel = fallbackModel
@@ -72,6 +76,7 @@ public struct SessionOptions: Sendable {
         self.finalTimeout = finalTimeout
         self.earlyFinalization = earlyFinalization
         self.settleWindow = settleWindow
+        self.quietTailGrace = quietTailGrace
     }
 }
 
@@ -110,6 +115,8 @@ public final class TranscriptionSession {
     private var stream: StreamingTranscriptionSession?
     private var audio = Data()
     private var speechChunks = 0
+    /// Unvoiced audio since the last voiced chunk.
+    private var trailingSilence: TimeInterval = 0
     private var reconnects = 0
     private var streamFinal: (text: String, language: String?)?
     private var streamDead = false
@@ -140,7 +147,12 @@ public final class TranscriptionSession {
         guard phase == .streaming else { return }
         if timeline.firstAudio == nil { timeline.mark(\.firstAudio) }
         audio.append(chunk.pcm)
-        if chunk.voiced { speechChunks += 1 }
+        if chunk.voiced {
+            speechChunks += 1
+            trailingSilence = 0
+        } else {
+            trailingSilence += PCMFormat.duration(ofBytes: chunk.pcm.count)
+        }
         stream?.send(chunk.pcm)
     }
 
@@ -307,12 +319,20 @@ public final class TranscriptionSession {
     /// The streamed text, if the stream has visibly finished after release:
     /// the model's look-ahead window plus margin has elapsed, no delta for `settleWindow`,
     /// and the text ends a sentence (Voxtral emits final punctuation when it flushes).
+    /// If the user was still talking when the audio ended, the words in the look-ahead are still coming: wait
+    /// for a delta clearly after release (not one that was just in flight), or `quietTailGrace` without one.
+    /// If the audio ended in at least a look-ahead's worth of silence, the model has emitted everything already.
+    /// Never after a reconnect: the replacement stream re-transcribes from the start, so its first
+    /// sentence isn't the whole utterance.
     private func settledText() -> String? {
         guard options.earlyFinalization, options.accuracyModel == nil, streamFinal == nil, !streamDead,
-              stream != nil, let releasedAt else { return nil }
+              reconnects == 0, stream != nil, let releasedAt else { return nil }
         let now = timeline.now()
         let lookAhead = Double(options.realtime.targetStreamingDelayMs ?? 240) / 1000 + 0.06
         guard now - releasedAt >= lookAhead else { return nil }
+        let endedInSilence = trailingSilence >= lookAhead
+        let tailArrived = (lastDeltaAt ?? -.infinity) > releasedAt + lookAhead / 2
+        guard endedInSilence || tailArrived || now - releasedAt >= lookAhead + options.quietTailGrace else { return nil }
         if let lastDeltaAt, now - lastDeltaAt < options.settleWindow { return nil }
         let text = TranscriptAssembler.normalize(assembler.streamed)
         guard let last = text.last, ".!?…。！？".contains(last) else { return nil }

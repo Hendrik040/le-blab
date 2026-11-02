@@ -47,7 +47,6 @@ public final class AudioCaptureManager: AudioCapturing {
     public var onInterrupted: ((AudioCaptureError) -> Void)?
 
     private var engine: AVAudioEngine?
-    private var converter: AVAudioConverter?
     private var configObserver: NSObjectProtocol?
     private var deviceUID: String?
     private var running = false
@@ -58,6 +57,8 @@ public final class AudioCaptureManager: AudioCapturing {
     /// An engine built and prepared ahead of time (not started: the mic is not live) so that pressing
     /// the shortcut only has to start it.
     private var prepared: (engine: AVAudioEngine, deviceUID: String?, observer: NSObjectProtocol)?
+    /// Bumped on every `start`, so chunks still queued for the main queue from a previous capture are dropped.
+    private var captureGeneration = 0
     /// Diagnostics: how long the last `start` took until the engine was running.
     public private(set) var lastStartDuration: TimeInterval = 0
 
@@ -94,6 +95,7 @@ public final class AudioCaptureManager: AudioCapturing {
         stop(rewarm: false)
         self.deviceUID = deviceUID
         vad.reset()
+        captureGeneration += 1
         try startEngine()
         running = true
         lastStartDuration = ProcessInfo.processInfo.systemUptime - t0
@@ -110,7 +112,6 @@ public final class AudioCaptureManager: AudioCapturing {
             engine.stop()
         }
         engine = nil
-        converter = nil
         if rewarm {
             let uid = deviceUID
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.prewarm(deviceUID: uid) }
@@ -146,12 +147,13 @@ public final class AudioCaptureManager: AudioCapturing {
             throw AudioCaptureError.engineFailed("unsupported input format \(inFormat)")
         }
         converter.downmix = true
-        self.converter = converter
 
         // ~50 ms buffers keep the first-partial latency low without flooding the socket.
         let bufferSize = AVAudioFrameCount(inFormat.sampleRate * 0.05)
+        // The tap owns its converter: a late callback from a removed tap must not share the next one's.
+        let generation = captureGeneration
         input.installTap(onBus: 0, bufferSize: bufferSize, format: inFormat) { [weak self] buffer, _ in
-            self?.process(buffer)
+            self?.process(buffer, converter: converter, generation: generation)
         }
         configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine,
                                                                 queue: .main) { [weak self] _ in
@@ -186,8 +188,8 @@ public final class AudioCaptureManager: AudioCapturing {
     }
 
     // Runs on the audio render thread.
-    private func process(_ buffer: AVAudioPCMBuffer) {
-        guard let converter, buffer.frameLength > 0 else { return }
+    private func process(_ buffer: AVAudioPCMBuffer, converter: AVAudioConverter, generation: Int) {
+        guard buffer.frameLength > 0 else { return }
         let level = Self.rmsLevel(buffer)
         let ratio = outputFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
@@ -208,7 +210,7 @@ public final class AudioCaptureManager: AudioCapturing {
         let voiced = vad.process(levelDB: level.db)
         let chunk = AudioChunk(pcm: pcm, level: level.normalized, voiced: voiced)
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.running else { return }
+            guard let self, self.running, self.captureGeneration == generation else { return }
             self.onChunk?(chunk)
         }
     }

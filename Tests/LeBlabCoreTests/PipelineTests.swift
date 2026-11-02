@@ -169,6 +169,80 @@ struct TranscriptionSessionTests {
         #expect(!session.finalizedEarly)
     }
 
+    @Test func punctuatedTextBeforeReleaseWaitsForTheFlushedTail() async throws {
+        // "Sounds good." streamed while talking; "See you then." is still in the model's look-ahead at release.
+        let streaming = FakeStreaming(), batch = FakeBatch()
+        var o = options(finalTimeout: 3)
+        o.realtime.targetStreamingDelayMs = 80
+        let session = TranscriptionSession(options: o, streaming: streaming, batch: batch)
+        session.start()
+        session.append(chunk())
+        streaming.sessions[0].emit(.textDelta("Sounds good."))
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            streaming.sessions[0].emit(.textDelta(" See you then."))
+        }
+        let result = try await session.finish().get()
+        #expect(result.text == "Sounds good. See you then.", "the words flushed after release are not cut off")
+        #expect(session.finalizedEarly)
+    }
+
+    @Test func deltaStillInFlightAtReleaseIsNotTheFlushedTail() async throws {
+        // "Sounds good." is ordinary streaming lag landing just after release; the look-ahead words follow later.
+        let streaming = FakeStreaming(), batch = FakeBatch()
+        var o = options(finalTimeout: 3)
+        o.realtime.targetStreamingDelayMs = 240
+        let session = TranscriptionSession(options: o, streaming: streaming, batch: batch)
+        session.start()
+        session.append(chunk())
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            streaming.sessions[0].emit(.textDelta("Sounds good."))
+            try? await Task.sleep(nanoseconds: 380_000_000)
+            streaming.sessions[0].emit(.textDelta(" See you then."))
+        }
+        let result = try await session.finish().get()
+        #expect(result.text == "Sounds good. See you then.")
+    }
+
+    @Test func quietEndingFinalizesRightAfterTheLookAhead() async throws {
+        // Paused before releasing: the model has already emitted every word, no grace period needed.
+        let streaming = FakeStreaming(), batch = FakeBatch()
+        var o = options(finalTimeout: 3)
+        o.realtime.targetStreamingDelayMs = 80
+        o.quietTailGrace = 1.0
+        let session = TranscriptionSession(options: o, streaming: streaming, batch: batch)
+        session.start()
+        session.append(chunk())
+        for _ in 0..<4 { session.append(AudioChunk(pcm: Data(count: 1600), level: 0, voiced: false)) }   // 200 ms quiet
+        streaming.sessions[0].emit(.textDelta("Move it to Friday."))
+        let started = Date()
+        let result = try await session.finish().get()
+        #expect(result.text == "Move it to Friday.")
+        #expect(session.finalizedEarly)
+        #expect(Date().timeIntervalSince(started) < 0.5, "not held back by the 1 s grace")
+    }
+
+    @Test func noEarlyFinalizationAfterReconnect() async throws {
+        // The replacement stream re-transcribes from the start: its first sentence is not the whole utterance.
+        let streaming = FakeStreaming(), batch = FakeBatch()
+        var o = options(finalTimeout: 0.8)
+        o.realtime.targetStreamingDelayMs = 80
+        let session = TranscriptionSession(options: o, streaming: streaming, batch: batch)
+        session.start()
+        session.append(chunk())
+        streaming.sessions[0].emit(.failed(.network("drop")))
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            streaming.sessions[1].emit(.textDelta("Sounds good."))
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            streaming.sessions[1].emit(.done(text: "Sounds good. See you then.", language: nil))
+        }
+        let result = try await session.finish().get()
+        #expect(result.text == "Sounds good. See you then.")
+        #expect(!session.finalizedEarly)
+    }
+
     @Test func assemblerNormalizesWhitespace() {
         var a = TranscriptAssembler()
         a.append(" Hello")
@@ -242,6 +316,42 @@ struct DictationControllerTests {
         #expect(rig.streaming.sessions[0].cancelled)
         #expect(!rig.streaming.sessions[0].finished)
         #expect(rig.env.stopped == [true])
+    }
+
+    @Test func quickRePressDuringReleaseTailKeepsTheNewRecording() async {
+        let rig = Rig()
+        rig.controller.releaseTail = 0.2
+        rig.streaming.onCreate = { $0.autoDone = "first" }
+        rig.controller.handle(.pressed)
+        rig.audio.speak()
+        rig.controller.handle(.released)
+        await settle(0.02)
+        rig.controller.handle(.pressed)      // pressed again while the first dictation's tail is still capturing
+        #expect(rig.controller.isRecording)
+        #expect(await waitUntil { rig.inserter.inserted.count == 1 }, "the first dictation still finishes")
+        #expect(rig.audio.running, "the old dictation's delayed stop must not stop the new recording")
+        rig.audio.speak()
+        rig.controller.handle(.released)
+        #expect(await waitUntil { rig.inserter.inserted.count == 2 })
+        #expect(!rig.audio.running)
+    }
+
+    @Test func rePressWhileWaitingForTheInFlightBufferIsNotConfused() async {
+        let rig = Rig()
+        rig.controller.releaseTail = 0.3
+        rig.controller.inFlightBufferWait = 0.2
+        rig.streaming.onCreate = { $0.autoDone = "first" }
+        rig.controller.handle(.pressed)
+        rig.audio.speak()
+        rig.audio.silence(7)                 // quiet before release: waits for the in-flight buffer
+        rig.controller.handle(.released)
+        await settle(0.02)
+        let pressedAgain = Date()
+        rig.controller.handle(.pressed)
+        #expect(await waitUntil { rig.inserter.inserted.count == 1 }, "the first dictation still finishes")
+        #expect(Date().timeIntervalSince(pressedAgain) < 0.15, "its in-flight wait was ended, not run to timeout")
+        #expect(rig.audio.running)
+        #expect(rig.controller.isRecording)
     }
 
     @Test func quickTapInHoldModeShowsHintInsteadOfDictating() async {
