@@ -103,9 +103,16 @@ Techniques:
 1. **Connect in parallel with recording.** Audio captured before `session.created` is queued and
    flushed in order right after `session.update`.
 2. **Early finalization.** After release we send `flush` + `end`, then use the streamed text as soon
-   as the stream has settled (look-ahead window elapsed, no delta for 150 ms, text ends a sentence)
-   instead of waiting ~500 ms more for `transcription.done`. The `done` text is still received and
-   compared; mismatches are logged (no content). Unfinished sentences always wait for `done`.
+   as the stream has settled (look-ahead window — streaming delay + 60 ms — elapsed since the audio
+   ended, no delta for 100 ms, text ends a sentence) instead of waiting ~500 ms more for
+   `transcription.done`. If you were still talking when the audio ended, the words in the look-ahead
+   are still coming, so it also waits for a delta that clearly comes from the flush (more than half a
+   look-ahead after the audio ended), or 250 ms past the look-ahead without one: a sentence streamed
+   while talking ("Sounds good.") is never taken without the words after it. If you had spoken and the
+   audio then ended in at least a look-ahead of silence, every word is already in and that extra wait
+   is skipped. Never after a reconnect (the replay re-transcribes from the start). The `done` text is
+   still received and compared; mismatches are logged (no content). Unfinished sentences always wait
+   for `done`.
 3. **Pinned, non-reasoning formatter** with `prediction` (predicted outputs) and
    `reasoning_effort: "none"` where supported (Ministral rejects it; learned per model).
 4. **Skip the LLM for ≤ 3-word utterances** (local filler/capitalization cleanup instead).
@@ -127,6 +134,8 @@ Techniques:
 - Microphone unplugged mid-dictation → engine restarts on the new default device; if that fails
   the dictation is finalized with the audio captured so far.
 - Rapid repeated dictations → each reserves its insertion slot at release, so text lands in order.
+  Pressing again while the previous one is still capturing its release tail ends that tail at once;
+  its delayed stop can't touch the new recording, and chunks queued from the old capture are dropped.
 
 ## Shortcut
 

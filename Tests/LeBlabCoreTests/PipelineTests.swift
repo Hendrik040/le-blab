@@ -174,6 +174,7 @@ struct TranscriptionSessionTests {
         let streaming = FakeStreaming(), batch = FakeBatch()
         var o = options(finalTimeout: 3)
         o.realtime.targetStreamingDelayMs = 80
+        o.quietTailGrace = 1.0   // the tail has to be waited for, not just beat the grace cap
         let session = TranscriptionSession(options: o, streaming: streaming, batch: batch)
         session.start()
         session.append(chunk())
@@ -182,23 +183,49 @@ struct TranscriptionSessionTests {
             try? await Task.sleep(nanoseconds: 250_000_000)
             streaming.sessions[0].emit(.textDelta(" See you then."))
         }
+        let started = Date()
         let result = try await session.finish().get()
         #expect(result.text == "Sounds good. See you then.", "the words flushed after release are not cut off")
         #expect(session.finalizedEarly)
+        #expect(Date().timeIntervalSince(started) < 0.9, "settles right after the flushed tail, not at the 1 s grace")
+    }
+
+    /// Audio (v = 50 ms voiced, . = 50 ms quiet) that is not a quiet ending: the look-ahead words may still be coming.
+    @Test(arguments: [
+        "vvvv......vv",   // paused, then talked until release
+        "vvvv..",         // only 100 ms of quiet at the end, less than the look-ahead
+        "........",       // never flagged as voice (a quiet mic): unknown, not silent
+    ])
+    func notAQuietEndingWaitsForTheFlushedTail(audio: String) async throws {
+        let streaming = FakeStreaming(), batch = FakeBatch()
+        var o = options(finalTimeout: 3)
+        o.realtime.targetStreamingDelayMs = 80   // look-ahead 0.14 s
+        o.quietTailGrace = 1.0
+        let session = TranscriptionSession(options: o, streaming: streaming, batch: batch)
+        session.start()
+        for c in audio { session.append(AudioChunk(pcm: Data(count: 1600), level: c == "v" ? 0.5 : 0, voiced: c == "v")) }
+        streaming.sessions[0].emit(.textDelta("Sounds good."))
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            streaming.sessions[0].emit(.textDelta(" See you then."))
+        }
+        let result = try await session.finish().get()
+        #expect(result.text == "Sounds good. See you then.", "\(audio)")
     }
 
     @Test func deltaStillInFlightAtReleaseIsNotTheFlushedTail() async throws {
         // "Sounds good." is ordinary streaming lag landing just after release; the look-ahead words follow later.
         let streaming = FakeStreaming(), batch = FakeBatch()
         var o = options(finalTimeout: 3)
-        o.realtime.targetStreamingDelayMs = 240
+        o.realtime.targetStreamingDelayMs = 740   // look-ahead 0.8 s: wide margins when the machine is busy
+        o.quietTailGrace = 1.0
         let session = TranscriptionSession(options: o, streaming: streaming, batch: batch)
         session.start()
         session.append(chunk())
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 20_000_000)
             streaming.sessions[0].emit(.textDelta("Sounds good."))
-            try? await Task.sleep(nanoseconds: 380_000_000)
+            try? await Task.sleep(nanoseconds: 980_000_000)   // after the look-ahead
             streaming.sessions[0].emit(.textDelta(" See you then."))
         }
         let result = try await session.finish().get()
@@ -220,22 +247,24 @@ struct TranscriptionSessionTests {
         let result = try await session.finish().get()
         #expect(result.text == "Move it to Friday.")
         #expect(session.finalizedEarly)
-        #expect(Date().timeIntervalSince(started) < 0.5, "not held back by the 1 s grace")
+        #expect(Date().timeIntervalSince(started) < 0.9, "not held back by the 1 s grace")
     }
 
     @Test func noEarlyFinalizationAfterReconnect() async throws {
-        // The replacement stream re-transcribes from the start: its first sentence is not the whole utterance.
+        // The replacement stream re-transcribes from the start, so all of its text arrives after release and
+        // looks like the flushed tail — but its first sentence is not the whole utterance.
         let streaming = FakeStreaming(), batch = FakeBatch()
-        var o = options(finalTimeout: 0.8)
+        var o = options(finalTimeout: 3)
         o.realtime.targetStreamingDelayMs = 80
+        o.quietTailGrace = 1.0
         let session = TranscriptionSession(options: o, streaming: streaming, batch: batch)
         session.start()
         session.append(chunk())
         streaming.sessions[0].emit(.failed(.network("drop")))
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            try? await Task.sleep(nanoseconds: 100_000_000)   // later than half a look-ahead after release
             streaming.sessions[1].emit(.textDelta("Sounds good."))
-            try? await Task.sleep(nanoseconds: 400_000_000)
+            try? await Task.sleep(nanoseconds: 500_000_000)
             streaming.sessions[1].emit(.done(text: "Sounds good. See you then.", language: nil))
         }
         let result = try await session.finish().get()
@@ -331,15 +360,37 @@ struct DictationControllerTests {
         #expect(await waitUntil { rig.inserter.inserted.count == 1 }, "the first dictation still finishes")
         #expect(rig.audio.running, "the old dictation's delayed stop must not stop the new recording")
         rig.audio.speak()
+        #expect(rig.streaming.sessions[0].audio.count == 3200, "the first session kept only its own audio")
+        #expect(rig.streaming.sessions[1].audio.count == 3200)
         rig.controller.handle(.released)
         #expect(await waitUntil { rig.inserter.inserted.count == 2 })
         #expect(!rig.audio.running)
     }
 
+    @Test func rePressBeforeTheStopTaskRunsDoesNotWaitOnTheNewRecording() async {
+        // Release and press handled back to back (busy main thread): the old stop task only starts after the hand-off.
+        let rig = Rig()
+        rig.controller.releaseTail = 1.0
+        rig.controller.inFlightBufferWait = 1.0
+        rig.streaming.onCreate = { $0.autoDone = "first" }
+        rig.controller.handle(.pressed)
+        rig.audio.speak()
+        rig.audio.silence(7)                 // quiet before release: the stop task would wait for the in-flight buffer
+        rig.controller.handle(.released)
+        rig.controller.handle(.pressed)
+        let pressedAgain = Date()
+        await settle(0.02)
+        rig.audio.speak()                    // the new recording's first chunk: voiced, but not the old one's tail
+        #expect(await waitUntil { rig.inserter.inserted.count == 1 }, "the first dictation still finishes")
+        #expect(Date().timeIntervalSince(pressedAgain) < 0.5, "no in-flight wait or tail on a capture that was handed off")
+        #expect(rig.audio.running)
+        #expect(rig.streaming.sessions[1].audio.count == 3200)
+    }
+
     @Test func rePressWhileWaitingForTheInFlightBufferIsNotConfused() async {
         let rig = Rig()
         rig.controller.releaseTail = 0.3
-        rig.controller.inFlightBufferWait = 0.2
+        rig.controller.inFlightBufferWait = 1.0
         rig.streaming.onCreate = { $0.autoDone = "first" }
         rig.controller.handle(.pressed)
         rig.audio.speak()
@@ -349,7 +400,7 @@ struct DictationControllerTests {
         let pressedAgain = Date()
         rig.controller.handle(.pressed)
         #expect(await waitUntil { rig.inserter.inserted.count == 1 }, "the first dictation still finishes")
-        #expect(Date().timeIntervalSince(pressedAgain) < 0.15, "its in-flight wait was ended, not run to timeout")
+        #expect(Date().timeIntervalSince(pressedAgain) < 0.5, "its in-flight wait was ended, not run to timeout")
         #expect(rig.audio.running)
         #expect(rig.controller.isRecording)
     }

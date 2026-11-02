@@ -321,7 +321,8 @@ public final class TranscriptionSession {
     /// and the text ends a sentence (Voxtral emits final punctuation when it flushes).
     /// If the user was still talking when the audio ended, the words in the look-ahead are still coming: wait
     /// for a delta clearly after release (not one that was just in flight), or `quietTailGrace` without one.
-    /// If the audio ended in at least a look-ahead's worth of silence, the model has emitted everything already.
+    /// If the audio ended in at least a look-ahead's worth of silence after speech, the model has emitted
+    /// everything already. (Audio the VAD never flagged as voiced is unknown, not silent: a quiet mic.)
     /// Never after a reconnect: the replacement stream re-transcribes from the start, so its first
     /// sentence isn't the whole utterance.
     private func settledText() -> String? {
@@ -330,7 +331,7 @@ public final class TranscriptionSession {
         let now = timeline.now()
         let lookAhead = Double(options.realtime.targetStreamingDelayMs ?? 240) / 1000 + 0.06
         guard now - releasedAt >= lookAhead else { return nil }
-        let endedInSilence = trailingSilence >= lookAhead
+        let endedInSilence = speechChunks > 0 && trailingSilence >= lookAhead
         let tailArrived = (lastDeltaAt ?? -.infinity) > releasedAt + lookAhead / 2
         guard endedInSilence || tailArrived || now - releasedAt >= lookAhead + options.quietTailGrace else { return nil }
         if let lastDeltaAt, now - lastDeltaAt < options.settleWindow { return nil }

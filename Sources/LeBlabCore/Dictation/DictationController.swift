@@ -271,12 +271,14 @@ public final class DictationController: ObservableObject {
         Task { [weak self] in
             guard let self else { gate.open(); return }
             var tail = self.releaseTail
-            if quietBeforeRelease {
+            // A quick re-press may already have taken the microphone over, even before this task ran:
+            // then there is no tail left to capture, and the next chunk belongs to the new recording.
+            if quietBeforeRelease, self.captureOwner == recording.id {
                 // Already quiet: only the buffer in flight at release could hold one more word.
                 let voiced = await self.nextChunkVoiced(timeout: self.inFlightBufferWait)
                 tail = voiced == true ? self.releaseTail : 0
             }
-            if tail > 0 { try? await Task.sleep(nanoseconds: UInt64(tail * 1e9)) }
+            if tail > 0, self.captureOwner == recording.id { try? await Task.sleep(nanoseconds: UInt64(tail * 1e9)) }
             self.stopCapture(for: recording.id)
             await self.process(recording, after: previousGate, gate: gate)
         }
