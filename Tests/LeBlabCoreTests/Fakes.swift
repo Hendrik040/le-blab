@@ -171,7 +171,9 @@ struct FakeFormatter: TranscriptFormatting {
     var provisional: String?
     var final: String
     var delay: TimeInterval
+    var selfCorrection = false
     func provisionalText(for transcript: String, language: String?) -> String? { provisional }
+    func appliesSelfCorrection(to transcript: String) -> Bool { selfCorrection }
     func format(_ transcript: String, language: String?) async -> FormattedText {
         try? await Task.sleep(nanoseconds: UInt64(delay * 1e9))
         return FormattedText(text: final, usedLanguageModel: provisional != nil, fallbackReason: nil)

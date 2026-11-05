@@ -21,10 +21,14 @@ public protocol TranscriptFormatting: Sendable {
     /// Text that can go into the document right away while `format` is still running (locally
     /// cleaned transcript), or nil when `format` will be instant anyway.
     func provisionalText(for transcript: String, language: String?) -> String?
+    /// The transcript contains a spoken self-correction the model will apply ("at three, actually make that
+    /// four"): the provisional text would say the wrong thing, so it's worth waiting for `format`.
+    func appliesSelfCorrection(to transcript: String) -> Bool
 }
 
 public extension TranscriptFormatting {
     func provisionalText(for transcript: String, language: String?) -> String? { nil }
+    func appliesSelfCorrection(to transcript: String) -> Bool { false }
 }
 
 /// Mode A: minimal processing.
@@ -68,6 +72,11 @@ public struct SmartFormatter: TranscriptFormatting {
         let pre = vocabulary.apply(TranscriptAssembler.normalize(transcript))
         guard localReason(pre) == nil else { return nil }
         return RawFormatter.finalize(LocalCleanup.apply(pre, language: language))
+    }
+
+    public func appliesSelfCorrection(to transcript: String) -> Bool {
+        let pre = vocabulary.apply(TranscriptAssembler.normalize(transcript))
+        return localReason(pre) == nil && FormattingRouter.hasSelfCorrection(pre)
     }
 
     /// Why the model can be skipped for this text, or nil if it should run.

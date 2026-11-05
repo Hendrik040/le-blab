@@ -37,6 +37,16 @@ public enum FormattingRouter {
         return .local(reason: "clean transcript")
     }
 
+    /// Cues for the user correcting themselves, which change what the text says (not just how it looks).
+    static let selfCorrectionReasons: Set<String> = ["self-correction", "mid-sentence no", "hesitation"]
+
+    /// True when the transcript contains a spoken self-correction, whatever else it contains.
+    public static func hasSelfCorrection(_ transcript: String) -> Bool {
+        let text = transcript.lowercased().replacingOccurrences(of: "’", with: "'").replacingOccurrences(of: "‘", with: "'")
+        let range = NSRange(text.startIndex..., in: text)
+        return cues.contains { selfCorrectionReasons.contains($0.0) && $0.1.firstMatch(in: text, range: range) != nil }
+    }
+
     private static func pattern(_ alternatives: [String]) -> NSRegularExpression {
         let body = alternatives.joined(separator: "|")
         return try! NSRegularExpression(pattern: #"(?<![\p{L}\p{N}])(?:"# + body + #")(?![\p{L}\p{N}])"#)

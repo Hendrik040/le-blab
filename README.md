@@ -72,11 +72,11 @@ Live against the Mistral API on an M4 Max (see [docs/ARCHITECTURE.md](docs/ARCHI
 | Release → text inserted, raw mode | ~0.55 s |
 | Release → text inserted, smart formatting, clean sentence | ~0.55 s (no LLM call needed) |
 | Release → text inserted, sentence with a self-correction, native apps | ~0.5 s, polished in place at ~1.2 s |
-| Release → text inserted, sentence with a self-correction, browsers/chat apps | ~0.57 s with Speed first (default), ~1.2 s without |
+| Release → text inserted, sentence with a self-correction, browsers/chat apps | ~1.2 s (waits for the model so the correction is applied) |
 
 Measured with the end-to-end self-test (synthesized speech, TextEdit and Chrome). Speed first pastes
-the locally cleaned text in apps that can't be edited in place; turn it off in Settings → Formatting
-→ Speed to always wait for the polished text there.
+the locally cleaned text in apps that can't be edited in place, except for self-corrections, which wait
+for the model; turn it off in Settings → Formatting → Speed to always wait for the polished text there.
 
 ## Privacy in one paragraph
 

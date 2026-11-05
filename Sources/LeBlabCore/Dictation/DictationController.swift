@@ -471,8 +471,9 @@ public final class DictationController: ObservableObject {
             }
         }
 
-        // Speed first: this app can't be polished in place, so don't wait for the model at all.
-        if env?.speedFirstInPasteApps == true, !progress.done,
+        // Speed first: this app can't be polished in place, so don't wait for the model, unless the user
+        // corrected themselves: the cleaned text would then say the wrong thing ("at 3. Actually make that 4.").
+        if env?.speedFirstInPasteApps == true, !progress.done, !formatter.appliesSelfCorrection(to: transcript.text),
            let quick = formatter.provisionalText(for: transcript.text, language: transcript.language) {
             formatTask.cancel()
             await previousGate?.wait()

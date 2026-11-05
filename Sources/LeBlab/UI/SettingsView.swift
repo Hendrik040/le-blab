@@ -211,7 +211,7 @@ struct FormattingSettings: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Toggle("Insert immediately, polish in place (native apps)", isOn: $settings.optimisticInsert)
                     Toggle("Speed first in browsers & chat apps (skip the AI polish there)", isOn: $settings.speedFirstInPasteApps)
-                    Text("On by default. Chrome, Slack, Claude and other web/Electron apps can't be edited in place, so polishing there means waiting for the model (~0.6 s more). With this on they get the locally cleaned text instantly, but spoken self-corrections (\"actually, make that four\") are not applied there. Turn it off to always wait for the polished text.")
+                    Text("On by default. Chrome, Slack, Claude and other web/Electron apps can't be edited in place, so polishing there means waiting for the model (~0.6 s more). With this on they get the locally cleaned text instantly — except when you correct yourself (\"actually, make that four\"): those dictations still wait for the model so the correction is applied. Turn it off to always wait for the polished text.")
                         .font(.caption).foregroundStyle(.secondary)
                     Text("In apps like Notes, TextEdit and Mail compose fields that support it, the cleaned transcript appears right away and is replaced by the formatted version a moment later — unless you've already started editing it.")
                         .font(.caption).foregroundStyle(.secondary)

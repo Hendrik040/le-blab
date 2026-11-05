@@ -122,6 +122,33 @@ struct OptimisticInsertTests {
         #expect(rig.env.metrics.first?.formatting == "local (speed first)")
     }
 
+    @Test func speedFirstStillWaitsForTheModelOnASelfCorrection() async {
+        let rig = DictationControllerTests.Rig()
+        rig.env.optimisticInsertEnabled = true
+        rig.env.speedFirstInPasteApps = true
+        rig.env.formatter = FakeFormatter(provisional: "Friday at 3. Actually make that 4.", final: "Friday at 4.", delay: 0.2,
+                                          selfCorrection: true)
+        rig.streaming.onCreate = { $0.autoDone = "friday at three actually make that four" }
+        rig.controller.handle(.pressed); rig.audio.speak(); rig.controller.handle(.released)
+        #expect(await waitUntil { !rig.inserter.inserted.isEmpty })
+        #expect(rig.inserter.inserted == ["Friday at 4."], "the correction is applied, not the raw words")
+    }
+
+    @Test func smartFormatterFlagsSelfCorrectionsOnly() {
+        let smart = SmartFormatter(client: MistralChatClient(region: { .global }, apiKey: { nil }), model: "x", vocabulary: [])
+        #expect(smart.appliesSelfCorrection(to: "Can we move the meeting to Friday at three, actually make that four."))
+        #expect(smart.appliesSelfCorrection(to: "Ich wollte das Meeting auf Freitag verschieben. Nein, auf Donnerstag."))
+        #expect(smart.appliesSelfCorrection(to: "Send it to Maria, uh, Marta."))
+        #expect(!smart.appliesSelfCorrection(to: "The plan is first review the PR, second update the README."), "a list is cosmetic")
+        #expect(!smart.appliesSelfCorrection(to: "Please send the quarterly report to Maria by Friday afternoon."))
+        #expect(!smart.appliesSelfCorrection(to: "No, sorry."), "too short to go to the model")
+    }
+
+    @Test func selfCorrectionIsFoundInLongDictationsToo() {
+        let long = Array(repeating: "word", count: FormattingRouter.maxLocalWords + 5).joined(separator: " ") + " actually make that four."
+        #expect(FormattingRouter.hasSelfCorrection(long))
+    }
+
     @Test func cleanTranscriptsSkipTheProvisionalStep() async {
         let rig = rig(provisional: nil, final: "Already clean.", delay: 0, native: true)
         rig.streaming.onCreate = { $0.autoDone = "Already clean." }

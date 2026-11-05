@@ -185,7 +185,7 @@ Goal: text in place in well under a second after key release, never twice.
 | Replace safety | If a field ignores the selection and appends the polished text, the provisional copy is removed. |
 | Pre-warmed audio engine | Engine prepared (not started — mic not live) after each dictation and at launch: start 44 → ~12 ms. |
 | Always-on bubble | Reacts the instant the shortcut goes down (pixel bars follow your voice during the 200 ms chord debounce); the full overlay fades in in 60 ms with the duck already up. |
-| Speed first in paste apps (on by default) | Browsers/Slack/Electron can't be polished in place; this pastes the locally cleaned text immediately instead of waiting ~0.6 s for the model. Trade-off: self-corrections aren't applied there. Settings → Formatting → Speed. |
+| Speed first in paste apps (on by default) | Browsers/Slack/Electron can't be polished in place; this pastes the locally cleaned text immediately instead of waiting ~0.6 s for the model. Self-corrections (`FormattingRouter.hasSelfCorrection`) still wait for the model, since the cleaned text would say the wrong thing. Settings → Formatting → Speed. |
 
 Measured (release → text visible, p50): TextEdit clean 523–554 ms, raw ~525–580 ms, correction-sentence first
 text 508 ms (polished in place at ~1.15–1.4 s), Chrome clean ~530–540 ms, Chrome correction sentence 573 ms with
