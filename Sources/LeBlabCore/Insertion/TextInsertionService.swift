@@ -140,8 +140,14 @@ public final class TextInsertionService: TextInserting {
         if target?.isSecureField == true {
             return .notInserted(reason: "The focused field is a password field.", copied: false)
         }
-        let adjusted = SpacingRules.adjust(text, before: target?.characterBeforeCursor, after: target?.characterAfterCursor)
         lastTimings = "focus=\(Int((t1 - t0) * 1000))ms"
+        if !canReceiveText(target) {
+            // A ⌘V into nothing would lose the dictation once the old clipboard is restored: leave it on the clipboard.
+            copyToClipboard(text)
+            return .notInserted(reason: "No text field was selected, so it's on the clipboard. Click where it should go and press ⌘V.",
+                                copied: true)
+        }
+        let adjusted = SpacingRules.adjust(text, before: target?.characterBeforeCursor, after: target?.characterAfterCursor)
 
         switch method {
         case .typing:
@@ -279,6 +285,19 @@ public final class TextInsertionService: TextInserting {
 
     // MARK: - Strategy
 
+    /// False only when focus is clearly not somewhere text can go (nothing focused, the desktop, a Finder list).
+    /// Browsers, Electron apps and terminals don't always report their text fields, so they always count as typeable.
+    private func canReceiveText(_ target: FocusTarget?) -> Bool {
+        let bundleID = target?.bundleID ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        if let bundleID, Self.pasteFirstBundles.contains(bundleID) || bundleID.hasPrefix("com.google.Chrome")
+            || bundleID.hasPrefix("com.jetbrains.") { return true }
+        if let bundleID, isElectron(bundleID: bundleID, url: target?.bundleURL
+                                    ?? NSWorkspace.shared.frontmostApplication?.bundleURL) { return true }
+        guard let target else { return false }
+        return FocusClassifier.canReceiveText(role: target.role, isInsideWebArea: target.isInsideWebArea,
+                                              hasTextRange: { target.selectedRange != nil })
+    }
+
     /// Web views and Electron editors accept AX writes inconsistently (often "success" with no effect),
     /// and terminals don't support them at all — paste is the reliable path there.
     private func prefersAccessibility(_ target: FocusTarget) -> Bool {
@@ -310,6 +329,14 @@ public final class TextInsertionService: TextInserting {
     }
 
     // MARK: - Paste
+
+    /// Leaves `text` on the clipboard for the user to paste (not transient, never restored).
+    private func copyToClipboard(_ text: String) {
+        pendingRestore?.cancel()
+        pendingRestore = nil
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
 
     private func paste(_ text: String) async -> InsertionOutcome {
         // ⌘V is a synthetic key event: a still-held ⌃/⌥/⇧ from the shortcut would change its meaning.
@@ -402,6 +429,22 @@ public final class TextInsertionService: TextInserting {
             if CGEventSource.flagsState(.combinedSessionState).intersection(relevant).isEmpty { return }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
+    }
+}
+
+/// Decides from the focused element's Accessibility role whether pasting there could land in a text field.
+enum FocusClassifier {
+    /// Containers and controls that never take typed text themselves.
+    static let nonTextRoles: Set<String> = [
+        "AXApplication", "AXWindow", "AXSheet", "AXDrawer", "AXScrollArea", "AXSplitGroup", "AXGroup",
+        "AXList", "AXOutline", "AXTable", "AXBrowser", "AXRow", "AXCell", "AXImage", "AXButton",
+        "AXStaticText", "AXToolbar", "AXMenuBar", "AXMenu", "AXMenuItem", "AXTabGroup", "AXRadioButton", "AXCheckBox",
+    ]
+
+    /// Unknown roles count as typeable: a wrong "no field" only costs an extra ⌘V, a wrong "field" loses the text.
+    static func canReceiveText(role: String?, isInsideWebArea: Bool, hasTextRange: () -> Bool) -> Bool {
+        guard let role, nonTextRoles.contains(role) else { return true }
+        return isInsideWebArea || hasTextRange()
     }
 }
 

@@ -135,3 +135,28 @@ struct TextTests {
         #expect(SpacingRules.adjust(text, before: before, after: after) == expected)
     }
 }
+
+@Suite("Focus classifier (copy instead of pasting into nothing)")
+struct FocusClassifierTests {
+    @Test(arguments: ["AXTextArea", "AXTextField", "AXComboBox", "AXWebArea", "AXSomethingNew"])
+    func textRolesAndUnknownRolesAreTypeable(role: String) {
+        #expect(FocusClassifier.canReceiveText(role: role, isInsideWebArea: false, hasTextRange: { false }))
+    }
+
+    @Test(arguments: ["AXWindow", "AXList", "AXOutline", "AXScrollArea", "AXGroup", "AXButton"])
+    func containersWithoutACaretAreNot(role: String) {
+        #expect(!FocusClassifier.canReceiveText(role: role, isInsideWebArea: false, hasTextRange: { false }))
+    }
+
+    @Test func noRoleCountsAsTypeable() {
+        #expect(FocusClassifier.canReceiveText(role: nil, isInsideWebArea: false, hasTextRange: { false }))
+    }
+
+    @Test func contentEditableGroupInAWebPageIsTypeable() {
+        #expect(FocusClassifier.canReceiveText(role: "AXGroup", isInsideWebArea: true, hasTextRange: { false }))
+    }
+
+    @Test func nativeGroupWithACaretIsTypeable() {
+        #expect(FocusClassifier.canReceiveText(role: "AXGroup", isInsideWebArea: false, hasTextRange: { true }))
+    }
+}

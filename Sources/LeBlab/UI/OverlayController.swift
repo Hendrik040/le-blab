@@ -282,7 +282,7 @@ struct OverlayView: View {
                 }
                 HStack {
                     Spacer()
-                    Button("Copy", action: onCopy).controlSize(.small)
+                    if !copied { Button("Copy", action: onCopy).controlSize(.small) }
                     Button("Dismiss", action: onDismiss).controlSize(.small)
                 }
             }
