@@ -122,6 +122,10 @@ public final class TranscriptionSession {
     private var streamDead = false
     private var finalContinuation: CheckedContinuation<Void, Never>?
     private var lastDeltaAt: TimeInterval?
+    /// Set by the settle task when it ended the wait; lets `finish()` tell that from a timeout or a dead stream.
+    private var settleFired = false
+    /// Test seam: runs right after the settle task resumed `finish()`, before `finish()` continues.
+    var onSettleDecided: (() -> Void)?
     private var releasedAt: TimeInterval?
     private var earlyText: String?
 
@@ -176,8 +180,15 @@ public final class TranscriptionSession {
             stream?.finish()
         }
 
-        await waitForStreamFinal(timeout: options.finalTimeout + min(audioDuration * 0.25, 10),
-                                 allowEarly: options.earlyFinalization && options.accuracyModel == nil)
+        let allowEarly = options.earlyFinalization && options.accuracyModel == nil
+        let deadline = timeline.now() + options.finalTimeout + min(audioDuration * 0.25, 10)
+        repeat {
+            settleFired = false
+            await waitForStreamFinal(timeout: max(0, deadline - timeline.now()), allowEarly: allowEarly)
+            // The settle task decided, but a delta can land before this continuation runs and un-settle the text.
+            // The stream is still healthy then: keep waiting rather than dropping it for the batch fallback.
+        } while settleFired && phase != .cancelled && streamFinal == nil && !streamDead && stream != nil
+            && settledText() == nil && timeline.now() < deadline
         if phase == .cancelled { return .failure(.cancelled) }
         if streamFinal == nil, let early = settledText() {
             finalizedEarly = true
@@ -306,7 +317,12 @@ public final class TranscriptionSession {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 25_000_000)
                 guard let self, !Task.isCancelled else { return }
-                if self.settledText() != nil { self.resumeFinalWaiter(); return }
+                if self.settledText() != nil {
+                    self.settleFired = true
+                    self.resumeFinalWaiter()
+                    self.onSettleDecided?()
+                    return
+                }
             }
         } : nil
         await withCheckedContinuation { continuation in

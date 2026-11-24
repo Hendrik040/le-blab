@@ -250,6 +250,30 @@ struct TranscriptionSessionTests {
         #expect(Date().timeIntervalSince(started) < 0.9, "not held back by the 1 s grace")
     }
 
+    @Test func deltaLandingAfterTheSettleDecisionKeepsTheStream() async throws {
+        // The settle task decides, then one more delta lands before finish() resumes and un-settles the text.
+        // The healthy stream must be waited on again, not dropped for the batch fallback.
+        let streaming = FakeStreaming(), batch = FakeBatch()
+        var o = options(finalTimeout: 3)
+        o.realtime.targetStreamingDelayMs = 80
+        o.quietTailGrace = 1.0
+        let session = TranscriptionSession(options: o, streaming: streaming, batch: batch)
+        session.start()
+        session.append(chunk())
+        for _ in 0..<4 { session.append(AudioChunk(pcm: Data(count: 1600), level: 0, voiced: false)) }
+        streaming.sessions[0].emit(.textDelta("Sounds good."))
+        var fired = 0
+        session.onSettleDecided = {
+            fired += 1
+            if fired == 1 { streaming.sessions[0].emit(.textDelta(" See you then.")) }
+        }
+        let result = try await session.finish().get()
+        #expect(fired == 2, "the second settle decision is the one that counts")
+        #expect(result.text == "Sounds good. See you then.")
+        #expect(session.finalizedEarly)
+        #expect(batch.calls.isEmpty, "no batch fallback")
+    }
+
     @Test func noEarlyFinalizationAfterReconnect() async throws {
         // The replacement stream re-transcribes from the start, so all of its text arrives after release and
         // looks like the flushed tail — but its first sentence is not the whole utterance.
