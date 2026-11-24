@@ -115,7 +115,7 @@
   - Apple allows at most 100 `contextualStrings` ([docs](https://developer.apple.com/tutorials/data/documentation/speech/sfspeechrecognitionrequest/contextualstrings.md)).
 
 ## 4. What Le Blab can do today
-The repo is `/Users/hendrikkrack/Desktop/demos/wispr-clone`, and references are `File.swift:line` under `Sources/`. `DictationController.swift` line numbers are from the working tree, which another session is editing.
+References are `File.swift:line` under `Sources/`. `DictationController.swift` line numbers are from the working tree, which another session is editing.
 
 **Vocabulary pipeline**
 - **Each entry is `{id, term, aliases}` with no source, count or date** (`VocabularyCorrector.swift:4-13`). The defaults are CodeRabbit, DevRel, GitHub, Mistral and Voxtral, plus 5 aliases (`:15-21`).

@@ -120,3 +120,7 @@ prompts); normal launches read the Keychain only.
 
 Swapping in a local speech model: implement `StreamingTranscriber` / `BatchTranscriber`
 (`Sources/LeBlabCore/Transcription/SpeechTranscription.swift`) — see the architecture doc.
+
+## License
+
+[MIT](LICENSE). Le Blab is an independent project and is not affiliated with Wispr or Mistral AI.
